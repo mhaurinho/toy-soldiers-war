@@ -1,0 +1,9 @@
+export const MAP_RADIUS = 30;
+export const SIM_HZ = 20;
+export const SIM_DT = 1 / SIM_HZ;
+export const INPUT_DELAY_TICKS = 2;
+export const BUDGET = 132;
+export const CAPTURE_SECONDS = 42;
+export const CAPTURE_RADIUS = 4.7;
+export const GRAVITY = 16;
+export const COMMAND_VERSION = 1;

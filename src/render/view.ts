@@ -150,6 +150,12 @@ export class GameView {
   private dragY = 0;
   private edge = { x: 0, y: 0 };
   private reduceMotion = false;
+  private coarse = false;
+  private quality: 'high' | 'medium' | 'low' = 'high';
+  private pixelRatio = 1;
+  private slowFrames = 0;
+  private warmed = 0;
+  private sun!: THREE.DirectionalLight;
   private menuYaw = 0.2;
   private onFrame: (dt: number) => void = () => {};
 
@@ -163,9 +169,11 @@ export class GameView {
   }
 
   async init(): Promise<void> {
+    this.coarse = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+    this.quality = this.chooseQuality();
     this.renderer = new THREE.WebGPURenderer({
       canvas: this.canvas,
-      antialias: true,
+      antialias: this.quality === 'high',
       alpha: false,
       powerPreference: 'high-performance',
     });
@@ -176,8 +184,6 @@ export class GameView {
     await this.renderer.init();
     const backend = this.renderer.backend as { isWebGPUBackend?: boolean };
     this.backend = backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2';
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
-    this.resize();
 
     this.scene.background = new THREE.Color(0x17130f);
     this.scene.fog = new THREE.Fog(0x17130f, 48, 128);
@@ -191,10 +197,11 @@ export class GameView {
 
     this.buildRoom();
     this.buildPools();
-    this.buildPost();
+    this.applyQuality();
     this.scene.add(this.preview);
 
     window.addEventListener('resize', () => this.resize());
+    window.visualViewport?.addEventListener('resize', () => this.resize());
     window.addEventListener('keydown', (e) => {
       const key = e.key.toLowerCase();
       this.keys.add(key);
@@ -202,6 +209,7 @@ export class GameView {
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
     window.addEventListener('mousemove', (e) => {
+      if (this.coarse) return;
       const m = 36;
       const w = window.innerWidth;
       const h = window.innerHeight;
@@ -229,7 +237,7 @@ export class GameView {
     });
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      this.cam.dist = clamp(this.cam.dist * (e.deltaY > 0 ? 1.08 : 0.92), 8, 62);
+      this.cam.dist = clamp(this.cam.dist * (e.deltaY > 0 ? 1.08 : 0.92), 8, 86);
     }, { passive: false });
 
     this.setTerrain(20261022);
@@ -242,15 +250,45 @@ export class GameView {
   }
 
   resize() {
+    const next = this.chooseQuality();
+    const rank = { high: 2, medium: 1, low: 0 } as const;
+    if (rank[next] < rank[this.quality]) {
+      this.quality = next;
+      this.applyQuality();
+      return;
+    }
     const w = window.innerWidth;
     const h = window.innerHeight;
     this.camera.aspect = w / Math.max(1, h);
     this.camera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(w, h, false);
-    this.fxCanvas.width = w * Math.min(window.devicePixelRatio || 1, 1.6);
-    this.fxCanvas.height = h * Math.min(window.devicePixelRatio || 1, 1.6);
+    const fx = this.pixelRatio;
+    this.fxCanvas.width = Math.max(1, Math.round(w * fx));
+    this.fxCanvas.height = Math.max(1, Math.round(h * fx));
     this.fxCanvas.style.width = `${w}px`;
     this.fxCanvas.style.height = `${h}px`;
+  }
+
+  /** One-finger drag: the map sticks to the finger. */
+  panPixels(dx: number, dy: number) {
+    const scale = 0.04 * (this.cam.dist / 30);
+    const ix = -dx * scale;
+    const iz = dy * scale;
+    const fx = -Math.sin(this.cam.yaw);
+    const fz = -Math.cos(this.cam.yaw);
+    const rx = Math.cos(this.cam.yaw);
+    const rz = -Math.sin(this.cam.yaw);
+    this.cam.x = clamp(this.cam.x + rx * ix + fx * iz, -MAP_RADIUS, MAP_RADIUS);
+    this.cam.z = clamp(this.cam.z + rz * ix + fz * iz, -MAP_RADIUS, MAP_RADIUS);
+  }
+
+  addZoom(factor: number) {
+    this.cam.dist = clamp(this.cam.dist * factor, 8, 86);
+  }
+
+  addYaw(delta: number) {
+    this.cam.yaw += delta;
   }
 
   setMode(mode: ViewMode) {
@@ -272,12 +310,14 @@ export class GameView {
     if (mode !== 'deploy' && this.cursorGhost) this.cursorGhost.visible = false;
     if (mode !== 'battle') this.showRange(null);
     if (changed && mode === 'battle') {
-      this.cam.dist = 30;
-      this.cam.pitch = 0.86;
+      const short = window.innerHeight < 520;
+      this.cam.dist = short ? 40 : 30;
+      this.cam.pitch = short ? 0.98 : 0.86;
     }
     if (changed && mode === 'deploy') {
-      this.cam.dist = 74;
-      this.cam.pitch = 1.05;
+      const short = window.innerHeight < 520;
+      this.cam.dist = short ? 96 : 74;
+      this.cam.pitch = short ? 1.16 : 1.05;
       this.cam.yaw = 0.62;
       this.cam.x = 0;
       this.cam.z = 0;
@@ -532,6 +572,7 @@ export class GameView {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     this.clock += dt;
+    this.noteFrame(dt);
     this.onFrame(dt);
     this.updateCamera(dt);
     this.updateFx(dt);
@@ -583,7 +624,7 @@ export class GameView {
       if (this.keys.has('d') || this.keys.has('arrowright')) ix += 1;
       if (this.keys.has('w') || this.keys.has('arrowup')) iz += 1;
       if ((this.keys.has('s') && !commandKeys) || this.keys.has('arrowdown')) iz -= 1;
-      if (this.mode === 'battle') {
+      if (this.mode === 'battle' && !this.coarse) {
         ix += this.edge.x;
         iz -= this.edge.y;
       }
@@ -864,6 +905,7 @@ export class GameView {
     const hemi = new THREE.HemisphereLight(0xfff4e4, 0x2a3a28, 0.72);
     this.scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xfff1dd, 3.35);
+    this.sun = sun;
     sun.position.set(-18, 32, 14);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -1024,23 +1066,86 @@ export class GameView {
     if (this.shots.instanceColor) this.shots.instanceColor.needsUpdate = true;
   }
 
-  private buildPost() {
+  private chooseQuality(): 'high' | 'medium' | 'low' {
+    const narrow = Math.min(window.innerWidth, window.innerHeight) < 520;
+    const cores = navigator.hardwareConcurrency || 8;
+    if (narrow || (this.coarse && cores <= 4)) return 'low';
+    if (this.coarse || window.innerWidth < 1024) return 'medium';
+    return 'high';
+  }
+
+  private applyQuality() {
+    const dpr = window.devicePixelRatio || 1;
+    const cap = this.quality === 'low' ? 1 : this.quality === 'medium' ? 1.25 : 1.6;
+    let ratio = Math.min(dpr, cap);
+    const longest = Math.max(window.innerWidth, window.innerHeight) * ratio;
+    const limit = this.quality === 'low' ? 1280 : this.quality === 'medium' ? 1700 : 2400;
+    if (longest > limit) ratio *= limit / longest;
+    this.pixelRatio = Math.max(0.65, ratio);
+    this.renderer.shadowMap.enabled = this.quality !== 'low';
+    if (this.sun) {
+      const size = this.quality === 'high' ? 2048 : this.quality === 'medium' ? 1024 : 512;
+      this.sun.castShadow = this.quality !== 'low';
+      this.sun.shadow.mapSize.set(size, size);
+      this.sun.shadow.map?.dispose();
+      this.sun.shadow.map = null;
+    }
+    this.syncShadowCasters();
+    if (this.quality === 'low') this.pipeline = null;
+    else this.buildPost(this.quality === 'high');
+    this.resize();
+  }
+
+  private syncShadowCasters() {
+    const on = this.quality !== 'low';
+    if (this.terrainMesh) {
+      this.terrainMesh.castShadow = on;
+      this.terrainMesh.receiveShadow = on;
+    }
+    if (this.lip) {
+      this.lip.castShadow = on;
+      this.lip.receiveShadow = on;
+    }
+    if (this.trees) {
+      this.trees.castShadow = on;
+      this.trees.receiveShadow = on;
+    }
+    for (const mesh of this.pools.values()) {
+      mesh.castShadow = on;
+      mesh.receiveShadow = on;
+    }
+  }
+
+  private noteFrame(dt: number) {
+    this.warmed += dt;
+    if (this.warmed < 2.5 || this.quality === 'low') return;
+    if (dt > 0.034) this.slowFrames += 1;
+    else this.slowFrames = Math.max(0, this.slowFrames - 1);
+    if (this.slowFrames < 40) return;
+    this.quality = this.quality === 'high' ? 'medium' : 'low';
+    this.slowFrames = 0;
+    this.applyQuality();
+  }
+
+  private buildPost(withAo: boolean) {
     try {
-      const prePass = pass(this.scene, this.camera);
-      prePass.transparent = false;
-      prePass.setMRT(mrt({ output: packNormalToRGB(normalView) }));
-      const prePassNormal = sample((uv) => unpackRGBToNormal(prePass.getTextureNode().sample(uv)));
-      const prePassDepth = prePass.getTextureNode('depth');
       const scenePass = pass(this.scene, this.camera);
-      const aoPass = ssao(prePassDepth, prePassNormal, this.camera);
-      aoPass.resolutionScale = 0.75;
-      aoPass.radius.value = 1.35;
-      aoPass.intensity.value = 1.05;
-      aoPass.bias.value = 0.035;
-      aoPass.samples.value = 10;
-      scenePass.contextNode = builtinAOContext(aoPass.getTextureNode().sample(screenUV).r);
+      if (withAo) {
+        const prePass = pass(this.scene, this.camera);
+        prePass.transparent = false;
+        prePass.setMRT(mrt({ output: packNormalToRGB(normalView) }));
+        const prePassNormal = sample((uv) => unpackRGBToNormal(prePass.getTextureNode().sample(uv)));
+        const prePassDepth = prePass.getTextureNode('depth');
+        const aoPass = ssao(prePassDepth, prePassNormal, this.camera);
+        aoPass.resolutionScale = 0.75;
+        aoPass.radius.value = 1.35;
+        aoPass.intensity.value = 1.05;
+        aoPass.bias.value = 0.035;
+        aoPass.samples.value = 10;
+        scenePass.contextNode = builtinAOContext(aoPass.getTextureNode().sample(screenUV).r);
+      }
       const color = scenePass.getTextureNode('output');
-      const bloomPass = bloom(color, 0.22, 0.42, 0.86);
+      const bloomPass = bloom(color, withAo ? 0.22 : 0.14, 0.36, 0.9);
       const pipeline = new THREE.RenderPipeline(this.renderer);
       pipeline.outputNode = color.add(bloomPass);
       this.pipeline = pipeline;
@@ -1148,6 +1253,7 @@ export class GameView {
     this.lip.castShadow = true;
     this.lip.receiveShadow = true;
     this.scene.add(this.lip);
+    this.syncShadowCasters();
   }
 
   private rebuildTrees() {
@@ -1170,6 +1276,7 @@ export class GameView {
     this.trees.castShadow = true;
     this.trees.receiveShadow = true;
     this.scene.add(this.trees);
+    this.syncShadowCasters();
     const pooled = this.pools.get('arvore');
     if (pooled) pooled.count = 0;
   }

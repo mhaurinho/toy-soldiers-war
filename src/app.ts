@@ -77,21 +77,29 @@ export class App {
   private hoverSpawn = -1;
   private lastBoom = 0;
   private lastPick = { id: -1, at: 0 };
-  private drag: { x: number; y: number; moved: boolean } | null = null;
+  private drag: { x: number; y: number; lastX: number; lastY: number; moved: boolean; touch: boolean } | null = null;
+  private fingers = new Map<number, { x: number; y: number }>();
+  private pinch: { dist: number; ang: number; x: number; y: number } | null = null;
+  private gesture: 'none' | 'pan' | 'pinch' = 'none';
+  private boxArmed = false;
 
-  constructor(private readonly root: HTMLElement, canvas: HTMLCanvasElement, fx: HTMLCanvasElement) {
+  constructor(private readonly root: HTMLElement, private readonly canvas: HTMLCanvasElement, fx: HTMLCanvasElement) {
     this.view = new GameView(canvas, fx);
     this.marquee = document.createElement('div');
     this.marquee.id = 'marquee';
     document.body.appendChild(this.marquee);
     this.root.addEventListener('click', (event) => this.onUi(event));
+    const narrow = window.matchMedia('(max-width: 900px), (pointer: coarse)').matches;
+    if (narrow || navigator.maxTouchPoints > 0) document.documentElement.classList.add('touch');
     this.root.addEventListener('pointerdown', (event) => this.onMinimap(event));
     this.root.addEventListener('pointermove', (event) => this.onMinimap(event));
     canvas.addEventListener('pointerdown', (event) => this.onPointerDown(event));
     canvas.addEventListener('pointermove', (event) => this.onPointerMove(event));
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     window.addEventListener('pointerup', (event) => this.onPointerUp(event));
+    window.addEventListener('pointercancel', (event) => this.onPointerUp(event));
     window.addEventListener('keydown', (event) => this.onKey(event));
+    document.addEventListener('gesturestart', (event) => event.preventDefault());
     this.render();
   }
 
@@ -442,18 +450,32 @@ export class App {
   }
 
   private battleMarkup(): string {
-    const tab = this.play === 'hotseat' ? ' · <kbd>Tab</kbd> troca o lado' : '';
+    const touch = document.documentElement.classList.contains('touch');
+    const tab = this.play === 'hotseat' ? (touch ? '' : ' · <kbd>Tab</kbd> troca o lado') : '';
+    const hint = touch
+      ? `Toque escolhe. Toque no chão manda. Um dedo olha em volta, pinça aproxima, dois dedos giram.${this.play === 'hotseat' ? ' Trocar lado no botão.' : ''}`
+      : `Esquerdo seleciona, direito ordena. <kbd>A</kbd> ataque em movimento, <kbd>S</kbd> para, <kbd>R</kbd> barragem.${tab} Setas e bordas movem a câmera. Segure o morro ou elimine o plástico inimigo.`;
+    const swap = this.play === 'hotseat' ? `<button class="btn tiny" type="button" data-act="swap">Trocar</button>` : '';
     return `<div class="tools">
         <button class="btn tiny glass" type="button" data-act="pause" style="background:rgba(22,18,14,.78);color:#f6f1e6">Pausa</button>
         <button class="btn ghost tiny" type="button" data-act="sfx">${this.sfx.enabled ? 'Som' : 'Mudo'}</button>
+        ${swap}
         <span class="fine">${escapeHtml(this.view.backend)}</span>
       </div>
       <div class="hud-top">
         <div class="cap" id="cap"><i class="g"></i><i class="t"></i><b id="cap-label">Morro</b></div>
         <div class="score"><span id="clock">0:00</span><span id="alive"></span></div>
       </div>
-      <aside class="glass sheet" id="sheet"><p class="hint">Esquerdo seleciona, direito ordena. <kbd>A</kbd> ataque em movimento, <kbd>S</kbd> para, <kbd>R</kbd> barragem.${tab} Setas e bordas movem a câmera. Segure o morro ou elimine o plástico inimigo.</p></aside>
+      <aside class="glass sheet" id="sheet"><p class="hint">${hint}</p></aside>
       <div class="glass miniwrap"><canvas id="minimap" width="168" height="168"></canvas></div>
+      <div class="touchbar">
+        <button class="btn tiny" type="button" data-act="all">Todos</button>
+        <button class="btn tiny" type="button" data-act="same">Iguais</button>
+        <button class="btn tiny${this.boxArmed ? ' on' : ''}" type="button" data-act="box">Área</button>
+        <button class="btn tiny" type="button" data-act="stop-order">Parar</button>
+        <button class="btn tiny${this.armed === 'attack' ? ' on' : ''}" type="button" data-act="arm-attack">Atacar</button>
+        <button class="btn tiny${this.armed === 'barrage' ? ' on' : ''}" type="button" data-act="arm-barrage">Barragem</button>
+      </div>
       <div class="pause" id="paused" hidden><p>Pausa</p></div>`;
   }
 
@@ -502,6 +524,9 @@ export class App {
       alive.textContent = `${TEAMS[0].name} ${snap.alive[0]} · ${TEAMS[1].name} ${snap.alive[1]}`;
     }
     if (paused instanceof HTMLElement) paused.hidden = !this.paused || this.screen === 'result';
+    this.root.querySelector('[data-act="box"]')?.classList.toggle('on', this.boxArmed);
+    this.root.querySelector('[data-act="arm-attack"]')?.classList.toggle('on', this.armed === 'attack');
+    this.root.querySelector('[data-act="arm-barrage"]')?.classList.toggle('on', this.armed === 'barrage');
     const sheet = this.root.querySelector('#sheet');
     if (sheet && this.screen === 'battle') sheet.innerHTML = this.sheetMarkup();
     const primary = this.primarySelection();
@@ -514,9 +539,12 @@ export class App {
       .map((id) => this.snap?.units.find((unit) => unit.id === id))
       .filter((unit): unit is UnitSnap => !!unit && unit.death < 0);
     if (!units.length) {
-      const armed = this.armed === 'attack' ? ' Ataque em movimento armado: clique no chão.' : this.armed === 'barrage' ? ' Barragem armada: clique no alvo.' : '';
-      const tab = this.play === 'hotseat' ? ' Tab troca o lado.' : '';
-      return `<p class="hint">Esquerdo seleciona, direito ordena. A ataca em movimento, S para, R barragem.${tab}${armed} O morro central fecha a partida em ${CAPTURE_SECONDS}s.</p>`;
+      const armed = this.armed === 'attack' ? ' Ataque em movimento armado.' : this.armed === 'barrage' ? ' Barragem armada: toque o alvo.' : '';
+      const touch = document.documentElement.classList.contains('touch');
+      const hint = touch
+        ? `Toque escolhe. Toque no chão manda. Arraste para olhar, pinça para aproximar.${armed}`
+        : `Esquerdo seleciona, direito ordena. A ataca em movimento, S para, R barragem.${this.play === 'hotseat' ? ' Tab troca o lado.' : ''}${armed} O morro central fecha a partida em ${CAPTURE_SECONDS}s.`;
+      return `<p class="hint">${hint}</p>`;
     }
     const first = units[0];
     const def = BY_ID[first.defId];
@@ -552,6 +580,26 @@ export class App {
     else if (act === 'deploy-next') this.nextAfterDeploy();
     else if (act === 'pause') this.togglePause();
     else if (act === 'again') this.begin(this.play);
+    else if (act === 'all') this.selectGroup('all');
+    else if (act === 'same') this.selectGroup('same');
+    else if (act === 'box') {
+      this.boxArmed = !this.boxArmed;
+      this.paintHud();
+    } else if (act === 'stop-order') {
+      const ids = this.ownSelected();
+      if (ids.length) this.send({ type: 'stop', ids });
+    } else if (act === 'arm-attack') {
+      this.armed = this.armed === 'attack' ? null : 'attack';
+      this.paintHud();
+    } else if (act === 'arm-barrage') {
+      this.armed = this.armed === 'barrage' ? null : 'barrage';
+      this.paintHud();
+    } else if (act === 'swap' && this.play === 'hotseat' && this.screen === 'battle') {
+      this.view.controlled = this.view.controlled === 0 ? 1 : 0;
+      this.view.selected.clear();
+      this.armed = null;
+      this.paintHud();
+    }
   }
 
   private applyPreset(id: string) {
@@ -649,37 +697,95 @@ export class App {
 
   private onPointerDown(event: PointerEvent) {
     if (event.button === 1 || event.altKey) return;
-    if (this.screen === 'battle' && event.button === 0) {
-      this.drag = { x: event.clientX, y: event.clientY, moved: false };
+    if (event.button !== 0) return;
+    this.fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    this.canvas.setPointerCapture?.(event.pointerId);
+    if (this.fingers.size >= 2 && (this.screen === 'battle' || this.screen === 'deploy')) {
+      this.gesture = 'pinch';
+      this.drag = null;
+      this.marquee.style.display = 'none';
+      this.pinch = this.fingerSpan();
+      return;
+    }
+    if (this.screen === 'battle' || this.screen === 'deploy') {
+      this.gesture = 'none';
+      this.drag = {
+        x: event.clientX,
+        y: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        moved: false,
+        touch: event.pointerType === 'touch',
+      };
     }
   }
 
   private onPointerMove(event: PointerEvent) {
-    if (this.screen === 'deploy') this.hoverDeploy(event.clientX, event.clientY);
-    if (this.screen === 'battle') {
-      const hit = this.pick(event.clientX, event.clientY);
-      this.view.hoverId = hit?.id ?? -1;
-      if (this.drag) {
-        const dx = event.clientX - this.drag.x;
-        const dy = event.clientY - this.drag.y;
-        if (Math.hypot(dx, dy) > 6) {
-          this.drag.moved = true;
-          const x = Math.min(this.drag.x, event.clientX);
-          const y = Math.min(this.drag.y, event.clientY);
-          this.marquee.style.display = 'block';
-          this.marquee.style.left = `${x}px`;
-          this.marquee.style.top = `${y}px`;
-          this.marquee.style.width = `${Math.abs(dx)}px`;
-          this.marquee.style.height = `${Math.abs(dy)}px`;
-        }
+    if (this.fingers.has(event.pointerId)) {
+      this.fingers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+    if (this.gesture === 'pinch' && this.fingers.size >= 2) {
+      const span = this.fingerSpan();
+      if (span && this.pinch && span.dist > 8) {
+        let turn = span.ang - this.pinch.ang;
+        if (turn > Math.PI) turn -= Math.PI * 2;
+        if (turn < -Math.PI) turn += Math.PI * 2;
+        this.view.addZoom(this.pinch.dist / span.dist);
+        this.view.addYaw(turn);
+        this.view.panPixels(this.pinch.x - span.x, this.pinch.y - span.y);
+        this.pinch = span;
       }
+      return;
+    }
+    if (this.screen === 'deploy' && this.gesture !== 'pan') this.hoverDeploy(event.clientX, event.clientY);
+    if (this.screen === 'battle' && this.gesture !== 'pan') {
+      const hit = this.pick(event.clientX, event.clientY, event.pointerType === 'touch' ? 28 : 16);
+      this.view.hoverId = hit?.id ?? -1;
+    }
+    const drag = this.drag;
+    if (!drag || this.fingers.size !== 1) return;
+    const dx = event.clientX - drag.lastX;
+    const dy = event.clientY - drag.lastY;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 12) drag.moved = true;
+    const touchPan = drag.touch && drag.moved && !this.boxArmed && (this.screen === 'battle' || this.screen === 'deploy');
+    if (touchPan) {
+      this.gesture = 'pan';
+      this.marquee.style.display = 'none';
+      this.view.panPixels(dx, dy);
+      return;
+    }
+    if (this.screen === 'battle' && drag.moved && (!drag.touch || this.boxArmed)) {
+      const x = Math.min(drag.x, event.clientX);
+      const y = Math.min(drag.y, event.clientY);
+      this.marquee.style.display = 'block';
+      this.marquee.style.left = `${x}px`;
+      this.marquee.style.top = `${y}px`;
+      this.marquee.style.width = `${Math.abs(event.clientX - drag.x)}px`;
+      this.marquee.style.height = `${Math.abs(event.clientY - drag.y)}px`;
     }
   }
 
   private onPointerUp(event: PointerEvent) {
+    const wasPinch = this.gesture === 'pinch';
+    this.fingers.delete(event.pointerId);
+    if (wasPinch) {
+      if (this.fingers.size < 2) {
+        this.gesture = 'none';
+        this.pinch = null;
+        this.drag = null;
+        this.marquee.style.display = 'none';
+      }
+      return;
+    }
     const drag = this.drag;
     this.drag = null;
     this.marquee.style.display = 'none';
+    if (this.gesture === 'pan') {
+      this.gesture = 'none';
+      return;
+    }
     if (event.button === 2 && this.screen === 'battle') {
       this.orderAt(event.clientX, event.clientY, this.armed === 'attack', event.shiftKey);
       this.armed = null;
@@ -688,21 +794,73 @@ export class App {
     }
     if (event.button !== 0) return;
     if (this.screen === 'deploy') {
+      if (drag?.moved) return;
       this.deployClick(event.clientX, event.clientY);
       return;
     }
     if (this.screen !== 'battle' || !drag) return;
-    if (drag.moved) {
+    const touch = drag.touch;
+    if (drag.moved && (!touch || this.boxArmed)) {
       this.boxSelect(drag.x, drag.y, event.clientX, event.clientY, event.shiftKey);
+      this.boxArmed = false;
       this.armed = null;
+    } else if (!drag.moved && touch) {
+      this.touchTap(event.clientX, event.clientY);
     } else if (this.armed === 'attack') {
       this.orderAt(event.clientX, event.clientY, true, event.shiftKey);
       this.armed = null;
     } else if (this.armed === 'barrage') {
       this.barrageAt(event.clientX, event.clientY);
       this.armed = null;
-    } else this.selectAt(event.clientX, event.clientY, event.shiftKey);
+    } else if (!drag.moved) this.selectAt(event.clientX, event.clientY, event.shiftKey);
     this.paintHud();
+  }
+
+  private touchTap(x: number, y: number) {
+    const hit = this.pick(x, y, 28);
+    if (this.armed === 'barrage') {
+      this.barrageAt(x, y);
+      this.armed = null;
+      return;
+    }
+    if (this.armed === 'attack') {
+      this.orderAt(x, y, true, false);
+      this.armed = null;
+      return;
+    }
+    if (hit && hit.team !== this.view.controlled && this.ownSelected().length) {
+      this.orderAt(x, y, false, false);
+      return;
+    }
+    if (hit) {
+      this.selectAt(x, y, false, 28);
+      return;
+    }
+    if (this.ownSelected().length) this.orderAt(x, y, false, false);
+    else this.view.selected.clear();
+  }
+
+  private selectGroup(mode: 'all' | 'same') {
+    if (this.screen !== 'battle') return;
+    const team = this.view.controlled;
+    const current = this.ownSelected();
+    const sample = this.snap?.units.find((unit) => unit.id === current[0]);
+    this.view.selected.clear();
+    for (const unit of this.visibleUnits()) {
+      if (unit.team !== team) continue;
+      if (mode === 'same' && sample && unit.defId !== sample.defId) continue;
+      this.view.selected.add(unit.id);
+    }
+    this.sfx.blip();
+    this.paintHud();
+  }
+
+  private fingerSpan(): { dist: number; ang: number; x: number; y: number } | null {
+    const pts = [...this.fingers.values()];
+    if (pts.length < 2) return null;
+    const dx = pts[1].x - pts[0].x;
+    const dy = pts[1].y - pts[0].y;
+    return { dist: Math.hypot(dx, dy), ang: Math.atan2(dy, dx), x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
   }
 
   private hoverDeploy(x: number, y: number) {
@@ -754,8 +912,8 @@ export class App {
     this.render();
   }
 
-  private selectAt(x: number, y: number, shift: boolean) {
-    const hit = this.pick(x, y);
+  private selectAt(x: number, y: number, shift: boolean, slop = 16) {
+    const hit = this.pick(x, y, slop);
     const now = performance.now();
     if (!hit) {
       if (!shift) this.view.selected.clear();
@@ -867,15 +1025,15 @@ export class App {
     });
   }
 
-  private pick(x: number, y: number): UnitSnap | null {
+  private pick(x: number, y: number, slop = 16): UnitSnap | null {
     let best: UnitSnap | null = null;
-    let bestD = 32;
+    let bestD = slop + 20;
     for (const unit of this.visibleUnits()) {
       const def = BY_ID[unit.defId];
       const p = this.view.project(unit.x, unit.y + (def?.eye ?? 1) * 0.45, unit.z);
       if (p.behind) continue;
       const d = Math.hypot(p.sx - x, p.sy - y);
-      const rad = 16 + (def?.radius ?? 0.4) * 14;
+      const rad = slop + (def?.radius ?? 0.4) * 14;
       if (d < rad && d < bestD) {
         best = unit;
         bestD = d;

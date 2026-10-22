@@ -27,6 +27,14 @@ npm run preview
 
 O morro alto dá vantagem de tiro. Trincheira e sacos dão cobertura. Tiro indireto ignora a linha de visão e sofre menos com cobertura. A névoa esconde unidades, não o tabuleiro; um contato some de vista e deixa um fantasma por alguns segundos.
 
+## No celular
+
+O jogo cabe no telefone, em pé ou deitado, e no tablet. A página não rola nem amplia sozinha, e os painéis respeitam o entalhe da tela.
+
+Na batalha, um toque escolhe a peça. Outro toque no chão manda andar; no inimigo, atacar. Arrastar com um dedo olha o mapa. A pinça aproxima. Dois dedos giram a mesa. A barra de baixo traz Todos, Iguais, Área (uma caixa de seleção), Parar, Atacar e Barragem. No hot-seat, Trocar passa o posto.
+
+No telefone o render alivia: teto de pixels, sem sombra direcional e sem SSAO. O tablet fica no meio, só com bloom e sombra menor. Se o quadro passar de ~30 ms por um tempo, a qualidade desce um degrau. Sem WebGPU, o mesmo código segue em WebGL2.
+
 ## Stack
 
 Prioridade: imagem de plástico sob luz de mesa, e uma simulação que no futuro possa rodar igual nos dois clientes.

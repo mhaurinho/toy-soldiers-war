@@ -451,10 +451,10 @@ export class GameView {
     this.cursorGhost.rotation.y = heading;
   }
 
-  poseCamera(x: number, z: number, yaw: number, pitch: number, dist: number) {
+  poseCamera(x: number, z: number, yaw: number, pitch: number, dist: number, y = 2.1) {
     this.cam.x = x;
     this.cam.z = z;
-    this.cam.y = 2.1;
+    this.cam.y = y;
     this.cam.yaw = yaw;
     this.cam.pitch = pitch;
     this.cam.dist = dist;
@@ -1035,8 +1035,8 @@ export class GameView {
           bit.vx *= 0.2;
           bit.vz *= 0.2;
           bit.settled = true;
-          bit.life = 8;
-          bit.max = 8;
+          bit.life = 14;
+          bit.max = 14;
         } else bit.life -= dt;
       } else {
         bit.life -= dt;
@@ -1058,14 +1058,14 @@ export class GameView {
     this.scene.add(table);
     const felt = new THREE.Mesh(
       new THREE.CircleGeometry(36, 64),
-      new THREE.MeshStandardMaterial({ color: 0x1d4630, roughness: 0.95, metalness: 0 }),
+      new THREE.MeshStandardMaterial({ color: 0x2c2824, roughness: 0.95, metalness: 0 }),
     );
     felt.rotation.x = -Math.PI / 2;
     felt.position.y = -1.42;
     felt.receiveShadow = true;
     this.scene.add(felt);
 
-    const hemi = new THREE.HemisphereLight(0xfff4e4, 0x2a3a28, 0.72);
+    const hemi = new THREE.HemisphereLight(0xfff1df, 0x3a3228, 0.78);
     this.scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xfff1dd, 3.35);
     this.sun = sun;
@@ -1413,7 +1413,7 @@ export class GameView {
     if (this.lip) this.scene.remove(this.lip);
     this.lip = new THREE.Mesh(
       new THREE.TorusGeometry(t.radius, 0.38, 10, 80),
-      new THREE.MeshPhysicalMaterial({ color: 0x6d8a52, roughness: 0.28, clearcoat: 1, clearcoatRoughness: 0.2 }),
+      new THREE.MeshPhysicalMaterial({ color: 0x5c5146, roughness: 0.32, clearcoat: 0.6, clearcoatRoughness: 0.28 }),
     );
     this.lip.rotation.x = Math.PI / 2;
     this.lip.position.y = 0.62;
@@ -1451,7 +1451,7 @@ export class GameView {
         const cap = Math.max(all.length, 1);
         mesh = new THREE.InstancedMesh(
           geo,
-          new THREE.MeshStandardMaterial({ roughness: 0.66, metalness: 0.08, color: 0xffffff }),
+          new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0.12, color: 0xffffff, vertexColors: true }),
           cap,
         );
         mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
@@ -1461,20 +1461,20 @@ export class GameView {
         this.scene.add(mesh);
         this.propMeshes.set(kind, mesh);
       }
-      _color.set(PROP_COLOR[kind]);
+      _color.set(0xffffff);
       let shown = 0;
-      all.forEach((prop, i) => {
-        if (i >= mesh!.instanceMatrix.count) return;
-        const alive = this.propAlive.get(prop.id) !== false;
-        _dummy.position.set(prop.x, alive ? prop.y : -8, prop.z);
+      for (const prop of all) {
+        if (this.propAlive.get(prop.id) === false) continue;
+        if (shown >= mesh.instanceMatrix.count) break;
+        _dummy.position.set(prop.x, prop.y, prop.z);
         _dummy.rotation.set(0, prop.rot, 0);
-        _dummy.scale.setScalar(alive ? prop.scale : 0);
+        _dummy.scale.setScalar(prop.scale);
         _dummy.updateMatrix();
-        mesh!.setMatrixAt(i, _dummy.matrix);
-        mesh!.setColorAt(i, _color);
-        if (alive) shown += 1;
-      });
-      mesh.count = all.length;
+        mesh.setMatrixAt(shown, _dummy.matrix);
+        mesh.setColorAt(shown, _color);
+        shown += 1;
+      }
+      mesh.count = shown;
       mesh.visible = shown > 0;
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;

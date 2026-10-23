@@ -74,6 +74,7 @@ export class App {
   private paused = false;
   private armed: 'attack' | 'barrage' | null = null;
   private demo = false;
+  private demoPose: { x: number; z: number; y: number; yaw: number; pitch: number; dist: number } | null = null;
   private hoverSpawn = -1;
   private lastBoom = 0;
   private lastPick = { id: -1, at: 0 };
@@ -174,6 +175,7 @@ export class App {
   private startDemo(quebra = false) {
     this.stopMatch();
     this.demo = true;
+    this.demoPose = null;
     this.play = 'ai';
     this.seed = 20261022;
     this.terrain = generateTerrain(this.seed);
@@ -190,15 +192,23 @@ export class App {
     const tx = Math.cos(towerA) * 15.2;
     const tz = Math.sin(towerA) * 15.2;
     if (quebra) {
-      this.view.poseCamera(tx, tz, towerA + Math.PI, 0.78, 16);
+      this.demoPose = { x: tx, z: tz, y: 6.2, yaw: towerA + Math.PI, pitch: 0.28, dist: 22 };
+      this.view.poseCamera(tx, tz, towerA + Math.PI, 0.28, 22, 6.2);
       window.setTimeout(() => {
+        if (this.demoPose) {
+          const pose = this.demoPose;
+          this.view.poseCamera(pose.x, pose.z, pose.yaw, pose.pitch, pose.dist, pose.y);
+        }
         this.worker?.postMessage({ type: 'blast', x: tx, z: tz });
         const car = this.terrain?.props.find((prop) => prop.kind === 'car');
         if (car) this.worker?.postMessage({ type: 'blast', x: car.x, z: car.z });
         const wall = this.terrain?.props.find((prop) => prop.kind === 'wall');
         if (wall) this.worker?.postMessage({ type: 'blast', x: wall.x, z: wall.z });
-      }, 1600);
-    } else this.view.poseCamera(1.2, -0.4, 0.95, 0.68, 34);
+      }, 2400);
+    } else {
+      this.demoPose = { x: 1.2, z: -0.4, y: 2.1, yaw: 0.95, pitch: 0.68, dist: 34 };
+      this.view.poseCamera(1.2, -0.4, 0.95, 0.68, 34);
+    }
   }
 
   private stopMatch() {
@@ -209,6 +219,7 @@ export class App {
     this.paused = false;
     this.armed = null;
     this.demo = false;
+    this.demoPose = null;
   }
 
   private openWorker(openingPush: boolean, fastForward: number, aiTeams: number[]) {
@@ -223,7 +234,10 @@ export class App {
     worker.onmessage = (event: MessageEvent<{ type: string; snapshot?: Snapshot }>) => {
       const msg = event.data;
       if ((msg.type === 'snapshot' || msg.type === 'over') && msg.snapshot) this.onSnapshot(msg.snapshot);
-      if (msg.type === 'ready' && this.demo) this.view.poseCamera(1.2, -0.4, 0.95, 0.68, 34);
+      if (msg.type === 'ready' && this.demo && this.demoPose) {
+        const pose = this.demoPose;
+        this.view.poseCamera(pose.x, pose.z, pose.yaw, pose.pitch, pose.dist, pose.y);
+      }
     };
     worker.onerror = () => {
       this.errorText = 'A simulação em segundo plano não iniciou.';

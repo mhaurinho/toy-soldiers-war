@@ -405,19 +405,22 @@ function barricade(): THREE.BufferGeometry {
 }
 
 function eiffel(): THREE.BufferGeometry {
-  const iron: RGB = [0.62, 0.52, 0.38];
+  const iron: RGB = [0.72, 0.58, 0.38];
   const dark: RGB = [0.28, 0.22, 0.16];
   const parts: THREE.BufferGeometry[] = [];
-  const leg = (x: number, z: number) => {
-    parts.push(part(box(0.12, 2.6, 0.12, 0.02), iron, x, 1.3, z, z * 0.08, 0, -x * 0.08));
-  };
-  leg(-0.55, -0.55);
-  leg(0.55, -0.55);
-  leg(-0.55, 0.55);
-  leg(0.55, 0.55);
-  parts.push(part(box(1.35, 0.1, 1.35, 0.02), iron, 0, 2.15, 0));
-  parts.push(part(box(0.7, 1.3, 0.7, 0.03), iron, 0, 2.8, 0));
-  parts.push(part(box(0.28, 0.7, 0.28, 0.02), dark, 0.12, 3.7, 0, 0, 0, 0.4));
+  const legs: [number, number][] = [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]];
+  for (const [x, z] of legs) {
+    parts.push(part(box(0.14, 5.4, 0.14, 0.015), iron, x * 0.62, 2.7, z * 0.62, z * 0.11, 0, -x * 0.11));
+  }
+  parts.push(part(box(1.55, 0.06, 0.06, 0.01), dark, 0, 1.35, -0.55, 0.6, 0, 0.75));
+  parts.push(part(box(1.55, 0.06, 0.06, 0.01), dark, 0, 1.35, -0.55, -0.6, 0, -0.75));
+  parts.push(part(box(1.55, 0.06, 0.06, 0.01), dark, -0.55, 1.35, 0, 0, 0.6, 0.75));
+  parts.push(part(box(1.55, 0.06, 0.06, 0.01), dark, -0.55, 1.35, 0, 0, -0.6, -0.75));
+  parts.push(part(box(2.15, 0.1, 2.15, 0.02), iron, 0, 4.7, 0));
+  parts.push(part(box(0.78, 1.45, 0.78, 0.02), iron, 0, 5.5, 0));
+  parts.push(part(box(1.15, 0.08, 1.15, 0.015), iron, 0, 6.28, 0));
+  parts.push(part(box(0.18, 1.5, 0.18, 0.015), dark, 0.16, 7.05, 0, 0, 0, 0.5));
+  parts.push(part(box(0.12, 0.9, 0.12, 0.01), dark, 0.55, 6.35, 0.18, 1.05, 0.25, 0.35));
   return merge(parts);
 }
 

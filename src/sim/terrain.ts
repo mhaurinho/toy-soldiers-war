@@ -262,7 +262,7 @@ function placeParis(seed: number, spawns: SpawnPoint[]): Prop[] {
   const props: Prop[] = [];
   const rng = new Rng(seed ^ 0x51ed);
   const towerA = -Math.PI / 2 + Math.PI / 8;
-  addProp(props, 'tower', Math.cos(towerA) * 15.2, Math.sin(towerA) * 15.2, towerA + 0.4, 1.15, 1.55, 6.4, 96);
+  addProp(props, 'tower', Math.cos(towerA) * 15.2, Math.sin(towerA) * 15.2, towerA + 0.4, 1.45, 1.55, 9.6, 96);
 
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
@@ -476,8 +476,8 @@ export function lineOfSight(
 export function terrainTint(x: number, z: number, h: number, slope: number, seed: number): [number, number, number] {
   const n = Rng.hash2(Math.floor(x * 2.4), Math.floor(z * 2.4), seed);
   const path = corridorWeight(x, z);
-  const grassA: [number, number, number] = [0.4, 0.36, 0.3];
-  const grassB: [number, number, number] = [0.48, 0.42, 0.34];
+  const grassA: [number, number, number] = [0.34, 0.3, 0.26];
+  const grassB: [number, number, number] = [0.42, 0.36, 0.3];
   let r = grassA[0] + (grassB[0] - grassA[0]) * n;
   let g = grassA[1] + (grassB[1] - grassA[1]) * n;
   let b = grassA[2] + (grassB[2] - grassA[2]) * n;
@@ -503,8 +503,8 @@ export function terrainTint(x: number, z: number, h: number, slope: number, seed
   g = g * (1 - mesa) + 0.56 * mesa;
   b = b * (1 - mesa) + 0.36 * mesa;
   const p = clamp(path, 0, 1) * (1 - pad) * (1 - mesa * 0.5);
-  r = r * (1 - p) + 0.72 * p;
-  g = g * (1 - p) + 0.58 * p;
+  r = r * (1 - p) + 0.4 * p;
+  g = g * (1 - p) + 0.38 * p;
   b = b * (1 - p) + 0.36 * p;
   if (slope > 0.9) {
     const plastic = clamp((slope - 0.9) / 0.5, 0, 1) * 0.35;

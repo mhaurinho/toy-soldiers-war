@@ -6,9 +6,9 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { BY_ID, TEAMS } from '../data/catalog';
 import { MAP_RADIUS } from '../sim/constants';
 import { clamp, lerp, lerpAngle } from '../sim/math';
-import { generateTerrain, sampleHeight, terrainTint, type Terrain } from '../sim/terrain';
-import type { FxEvent, Snapshot, UnitSnap } from '../sim/types';
-import { meshLibrary, rotorOffset, turretOffset } from './meshes';
+import { generateTerrain, sampleHeight, terrainTint, type PropKind, type Terrain } from '../sim/terrain';
+import type { FxEvent, PropSnap, Snapshot, UnitSnap } from '../sim/types';
+import { meshLibrary, propLibrary, rotorOffset, turretOffset } from './meshes';
 
 export type ViewMode = 'menu' | 'builder' | 'deploy' | 'battle';
 
@@ -18,12 +18,37 @@ interface Shot {
 }
 
 interface LiveFx {
-  kind: 'tracer' | 'boom' | 'marker';
+  kind: 'tracer' | 'boom' | 'marker' | 'shock' | 'muzzle';
   life: number;
   max: number;
   mesh: THREE.Object3D;
   size: number;
 }
+
+interface Bit {
+  life: number;
+  max: number;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  spin: number;
+  size: number;
+  settled: boolean;
+}
+
+const PROP_COLOR: Record<PropKind, number> = {
+  tree: 0x6d8a48,
+  car: 0x4a3428,
+  lamp: 0x8d8478,
+  wall: 0xc8b79c,
+  rubble: 0x8a7e70,
+  barricade: 0x8d5a32,
+  tower: 0xc2a36a,
+  bag: 0xd1b07a,
+};
 
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
@@ -115,7 +140,13 @@ export class GameView {
   private pipeline: { render: () => void } | null = null;
   private terrain: Terrain | null = null;
   private terrainMesh: THREE.Mesh | null = null;
-  private trees: THREE.InstancedMesh | null = null;
+  private propMeshes = new Map<string, THREE.InstancedMesh>();
+  private propAlive = new Map<number, boolean>();
+  private debris: THREE.InstancedMesh | null = null;
+  private bits: Bit[] = [];
+  private puddles: THREE.InstancedMesh | null = null;
+  private puddleCount = 0;
+  private shake = 0;
   private pools = new Map<string, THREE.InstancedMesh>();
   private blobs!: THREE.InstancedMesh;
   private rings!: THREE.InstancedMesh;
@@ -296,7 +327,9 @@ export class GameView {
     this.mode = mode;
     const showBoard = mode !== 'builder';
     if (this.terrainMesh) this.terrainMesh.visible = showBoard;
-    if (this.trees) this.trees.visible = showBoard;
+    for (const mesh of this.propMeshes.values()) mesh.visible = showBoard;
+    if (this.debris) this.debris.visible = showBoard;
+    if (this.puddles) this.puddles.visible = showBoard;
     for (const ring of this.spawnRings) ring.visible = mode === 'deploy' || mode === 'menu';
     for (const label of this.spawnLabels) label.visible = mode === 'deploy';
     if (this.flagPole) this.flagPole.visible = showBoard;
@@ -311,8 +344,8 @@ export class GameView {
     if (mode !== 'battle') this.showRange(null);
     if (changed && mode === 'battle') {
       const short = window.innerHeight < 520;
-      this.cam.dist = short ? 40 : 30;
-      this.cam.pitch = short ? 0.98 : 0.86;
+      this.cam.dist = short ? 36 : 24;
+      this.cam.pitch = short ? 0.9 : 0.68;
     }
     if (changed && mode === 'deploy') {
       const short = window.innerHeight < 520;
@@ -328,7 +361,7 @@ export class GameView {
   setTerrain(seed: number) {
     this.terrain = generateTerrain(seed);
     this.rebuildTerrainMesh();
-    this.rebuildTrees();
+    this.layoutProps();
     this.placeSpawns();
   }
 
@@ -446,6 +479,7 @@ export class GameView {
     this.prev = this.curr;
     this.curr = { snap: snapshot, at: performance.now() };
     this.objective = snapshot.cap[0] - snapshot.cap[1];
+    this.syncProps(snapshot.props);
     for (const event of snapshot.fx) this.spawnFx(event);
   }
 
@@ -639,12 +673,14 @@ export class GameView {
       this.cam.z = clamp(this.cam.z + (rz * ix + fz * iz) * speed * dt, -MAP_RADIUS, MAP_RADIUS);
     }
     const horiz = Math.cos(this.cam.pitch) * this.cam.dist;
-    this.camera.position.set(
-      this.cam.x + Math.sin(this.cam.yaw) * horiz,
-      this.cam.y + Math.sin(this.cam.pitch) * this.cam.dist,
+      const bob = this.shake > 0 ? Math.sin(this.clock * 46) * this.shake : 0;
+      this.camera.position.set(
+      this.cam.x + Math.sin(this.cam.yaw) * horiz + bob,
+      this.cam.y + Math.sin(this.cam.pitch) * this.cam.dist + Math.cos(this.clock * 33) * this.shake * 0.45,
       this.cam.z + Math.cos(this.cam.yaw) * horiz,
     );
-    this.camera.lookAt(this.cam.x, this.cam.y, this.cam.z);
+    this.camera.lookAt(this.cam.x, this.cam.y + bob * 0.2, this.cam.z);
+    if (this.shake > 0) this.shake = Math.max(0, this.shake - dt * 1.35);
   }
 
   private sampleUnits(): UnitSnap[] {
@@ -692,10 +728,11 @@ export class GameView {
       const def = BY_ID[unit.defId];
       if (!def) continue;
       const dead = unit.death >= 0;
-      const tilt = dead ? clamp(unit.death / 0.55, 0, 1) * 1.15 : 0;
+      const melt = dead ? clamp(1 - unit.death / 1.05, 0.08, 1) : 1;
+      const tilt = dead ? clamp(unit.death / 0.45, 0, 1) * 1.25 : 0;
       const bob = !dead && (unit.state === 'move' || unit.state === 'fly') ? Math.sin(this.clock * 10 + unit.id) * 0.035 : 0;
-      const y = unit.y + bob - (dead ? tilt * 0.15 : 0);
-      this.put(def.mesh, counts, unit, y, unit.heading, def.scale, tilt, draw.ghost);
+      const y = unit.y + bob - (dead ? (1 - melt) * 0.42 : 0);
+      this.put(def.mesh, counts, unit, y, unit.heading, def.scale * (0.25 + 0.75 * melt), tilt, draw.ghost);
       if (def.turret) {
         const off = turretOffset(def.turret);
         const hx = unit.x + Math.sin(unit.heading) * off.z + Math.cos(unit.heading) * off.x;
@@ -810,24 +847,57 @@ export class GameView {
       this.flashes.set(event.id, 1);
       return;
     }
+    if (event.kind === 'muzzle') {
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.12, 8, 6),
+        new THREE.MeshBasicMaterial({ color: 0xfff2c4, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false }),
+      );
+      mesh.position.set(event.x, event.y, event.z);
+      this.scene.add(mesh);
+      this.live.push({ kind: 'muzzle', life: 0.08, max: 0.08, mesh, size: event.shot === 'bullet' ? 1.4 : 2.4 });
+      return;
+    }
     if (event.kind === 'tracer') {
       const positions = new Float32Array([event.x, event.y, event.z, event.x2, event.y2, event.z2]);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const hot = event.shot === 'shell' || event.shot === 'bomb' ? 0xffe08a : event.shot === 'rocket' || event.shot === 'missile' ? 0xffb070 : 0xfff6cf;
       const mat = new THREE.LineBasicMaterial({
-        color: event.team === 0 ? 0xfff1c2 : 0xffd0a4,
+        color: hot,
         transparent: true,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       });
       const mesh = new THREE.Line(geo, mat);
       this.scene.add(mesh);
-      this.live.push({ kind: 'tracer', life: 0.12, max: 0.12, mesh, size: 1 });
+      this.live.push({ kind: 'tracer', life: event.shot === 'bullet' ? 0.16 : 0.28, max: 0.28, mesh, size: 1 });
       return;
     }
+    if (event.kind === 'break') {
+      this.hideProp(event.id);
+      this.toss(event.x, event.y, event.z, event.prop === 'tower' ? 22 : 12, PROP_COLOR[event.prop], 4.2 + event.size);
+      this.shake = Math.max(this.shake, 0.16);
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.3, 8, 6),
+        new THREE.MeshBasicMaterial({ color: 0xffc48a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }),
+      );
+      mesh.position.set(event.x, event.y, event.z);
+      this.scene.add(mesh);
+      this.live.push({ kind: 'boom', life: 0.35, max: 0.35, mesh, size: event.size });
+      return;
+    }
+    if (event.kind === 'death') {
+      this.dropPuddle(event.x, event.y, event.z, event.team);
+      this.toss(event.x, event.y + 0.4, event.z, 6, event.team === 0 ? 0x2f9a48 : 0xd1a86a, 1.6);
+    }
     if (event.kind === 'boom' || event.kind === 'death') {
-      const size = event.kind === 'boom' ? event.size : 0.8;
-      const y = event.kind === 'boom' ? event.y : event.y + 0.4;
+      const size = event.kind === 'boom' ? event.size : 0.7;
+      const y = event.kind === 'boom' ? event.y : event.y + 0.35;
+      if (event.kind === 'boom' && size > 0.45) {
+        const dist = Math.hypot(event.x - this.cam.x, event.z - this.cam.z);
+        this.shake = Math.max(this.shake, clamp((size * 0.42) / (1.6 + dist * 0.12), 0, 0.38));
+        if (size > 0.8) this.toss(event.x, y, event.z, Math.min(12, Math.round(size * 3)), 0x6a5a48, size * 1.4);
+      }
       const mesh = new THREE.Mesh(
         new THREE.SphereGeometry(0.35, 10, 8),
         new THREE.MeshBasicMaterial({
@@ -840,7 +910,8 @@ export class GameView {
       );
       mesh.position.set(event.x, y, event.z);
       this.scene.add(mesh);
-      this.live.push({ kind: 'boom', life: 0.45, max: 0.45, mesh, size });
+      this.live.push({ kind: 'boom', life: size > 1 ? 0.62 : 0.4, max: 0.62, mesh, size });
+      if (event.kind === 'boom' && size > 0.7) this.pulseShock(event.x, y, event.z, size);
       return;
     }
     if (event.kind === 'marker') {
@@ -885,6 +956,98 @@ export class GameView {
       }
       return true;
     });
+    this.stepDebris(dt);
+  }
+
+  private pulseShock(x: number, y: number, z: number, size: number) {
+    const mesh = new THREE.Mesh(
+      (() => {
+        const geo = new THREE.RingGeometry(0.25, 0.42, 28);
+        geo.rotateX(-Math.PI / 2);
+        return geo;
+      })(),
+      new THREE.MeshBasicMaterial({ color: 0xffd7a2, transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    mesh.position.set(x, y + 0.08, z);
+    this.scene.add(mesh);
+    this.live.push({ kind: 'shock', life: 0.45, max: 0.45, mesh, size: Math.max(2.2, size) });
+  }
+
+  private dropPuddle(x: number, y: number, z: number, team: 0 | 1) {
+    this.ensureJuice();
+    if (!this.puddles) return;
+    const i = this.puddleCount % 48;
+    this.puddleCount += 1;
+    this.puddles.count = Math.min(48, this.puddleCount);
+    _dummy.position.set(x, y + 0.05, z);
+    _dummy.rotation.set(0, 0, 0);
+    _dummy.scale.set(1.3, 1, 1.05);
+    _dummy.updateMatrix();
+    this.puddles.setMatrixAt(i, _dummy.matrix);
+    _color.set(team === 0 ? 0x1f7a38 : 0xc49255);
+    this.puddles.setColorAt(i, _color);
+    this.puddles.instanceMatrix.needsUpdate = true;
+    if (this.puddles.instanceColor) this.puddles.instanceColor.needsUpdate = true;
+  }
+
+  private toss(x: number, y: number, z: number, count: number, color: number, force: number) {
+    this.ensureJuice();
+    _color.set(color);
+    for (let n = 0; n < count; n++) {
+      const bit = this.bits.find((item) => item.life <= 0) ?? this.bits.find((item) => item.settled) ?? this.bits[n % this.bits.length];
+      const ang = Math.random() * Math.PI * 2;
+      const spd = force * (0.35 + Math.random() * 0.8);
+      bit.life = 0.7 + Math.random() * 0.5;
+      bit.max = bit.life;
+      bit.x = x;
+      bit.y = y;
+      bit.z = z;
+      bit.vx = Math.cos(ang) * spd;
+      bit.vz = Math.sin(ang) * spd;
+      bit.vy = 1.4 + Math.random() * force;
+      bit.spin = Math.random() * 6;
+      bit.size = 0.35 + Math.random() * 0.7;
+      bit.settled = false;
+      if (this.debris) this.debris.setColorAt(this.bits.indexOf(bit), _color);
+    }
+    if (this.debris?.instanceColor) this.debris.instanceColor.needsUpdate = true;
+  }
+
+  private stepDebris(dt: number) {
+    if (!this.debris) return;
+    this.bits.forEach((bit, i) => {
+      if (bit.life <= 0) {
+        _dummy.position.set(0, -8, 0);
+        _dummy.scale.setScalar(0);
+        _dummy.updateMatrix();
+        this.debris!.setMatrixAt(i, _dummy.matrix);
+        return;
+      }
+      if (!bit.settled) {
+        bit.vy -= 14 * dt;
+        bit.x += bit.vx * dt;
+        bit.y += bit.vy * dt;
+        bit.z += bit.vz * dt;
+        const ground = this.terrain ? sampleHeight(this.terrain, bit.x, bit.z) : 0;
+        if (bit.y <= ground + 0.05) {
+          bit.y = ground + 0.05;
+          bit.vy = 0;
+          bit.vx *= 0.2;
+          bit.vz *= 0.2;
+          bit.settled = true;
+          bit.life = 8;
+          bit.max = 8;
+        } else bit.life -= dt;
+      } else {
+        bit.life -= dt;
+      }
+      _dummy.position.set(bit.x, bit.y, bit.z);
+      _dummy.rotation.set(bit.spin, bit.spin * 0.7, 0);
+      _dummy.scale.setScalar(bit.size * (bit.settled ? 0.7 : 1));
+      _dummy.updateMatrix();
+      this.debris!.setMatrixAt(i, _dummy.matrix);
+    });
+    this.debris.instanceMatrix.needsUpdate = true;
   }
 
   private buildRoom() {
@@ -1106,9 +1269,13 @@ export class GameView {
       this.lip.castShadow = on;
       this.lip.receiveShadow = on;
     }
-    if (this.trees) {
-      this.trees.castShadow = on;
-      this.trees.receiveShadow = on;
+    for (const mesh of this.propMeshes.values()) {
+      mesh.castShadow = on;
+      mesh.receiveShadow = on;
+    }
+    if (this.debris) {
+      this.debris.castShadow = false;
+      this.debris.receiveShadow = on;
     }
     for (const mesh of this.pools.values()) {
       mesh.castShadow = on;
@@ -1256,29 +1423,93 @@ export class GameView {
     this.syncShadowCasters();
   }
 
-  private rebuildTrees() {
-    if (this.trees) {
-      this.scene.remove(this.trees);
+  private hideProp(id: number) {
+    this.propAlive.set(id, false);
+    this.layoutProps();
+  }
+
+  private syncProps(list: PropSnap[]) {
+    let changed = this.propMeshes.size === 0;
+    for (const prop of list) {
+      const prev = this.propAlive.get(prop.id);
+      if (prev !== prop.alive) {
+        this.propAlive.set(prop.id, prop.alive);
+        changed = true;
+      }
     }
+    if (changed) this.layoutProps();
+  }
+
+  private layoutProps() {
     if (!this.terrain) return;
-    const geo = meshLibrary().arvore;
-    const mat = this.pools.get('arvore')?.material as THREE.Material;
-    this.trees = new THREE.InstancedMesh(geo, mat, Math.max(1, this.terrain.trees.length));
-    this.terrain.trees.forEach((tree, i) => {
-      _dummy.position.set(tree.x, tree.y, tree.z);
-      _dummy.rotation.set(0, tree.rot, 0);
-      _dummy.scale.setScalar(tree.scale);
+    this.ensureJuice();
+    const lib = propLibrary();
+    for (const [kind, geo] of Object.entries(lib) as [PropKind, THREE.BufferGeometry][]) {
+      const all = this.terrain.props.filter((prop) => prop.kind === kind);
+      let mesh = this.propMeshes.get(kind);
+      if (!mesh) {
+        const cap = Math.max(all.length, 1);
+        mesh = new THREE.InstancedMesh(
+          geo,
+          new THREE.MeshStandardMaterial({ roughness: 0.66, metalness: 0.08, color: 0xffffff }),
+          cap,
+        );
+        mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+        mesh.frustumCulled = false;
+        mesh.castShadow = this.quality !== 'low';
+        mesh.receiveShadow = this.quality !== 'low';
+        this.scene.add(mesh);
+        this.propMeshes.set(kind, mesh);
+      }
+      _color.set(PROP_COLOR[kind]);
+      let shown = 0;
+      all.forEach((prop, i) => {
+        if (i >= mesh!.instanceMatrix.count) return;
+        const alive = this.propAlive.get(prop.id) !== false;
+        _dummy.position.set(prop.x, alive ? prop.y : -8, prop.z);
+        _dummy.rotation.set(0, prop.rot, 0);
+        _dummy.scale.setScalar(alive ? prop.scale : 0);
+        _dummy.updateMatrix();
+        mesh!.setMatrixAt(i, _dummy.matrix);
+        mesh!.setColorAt(i, _color);
+        if (alive) shown += 1;
+      });
+      mesh.count = all.length;
+      mesh.visible = shown > 0;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    }
+  }
+
+  private ensureJuice() {
+    if (this.debris) return;
+    this.debris = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.16, 0.1, 0.2),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7, metalness: 0.05 }),
+      140,
+    );
+    this.debris.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(140 * 3), 3);
+    this.debris.frustumCulled = false;
+    this.debris.count = 140;
+    this.scene.add(this.debris);
+    for (let i = 0; i < 140; i++) {
+      this.bits.push({ life: 0, max: 1, x: 0, y: -8, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, size: 0.2, settled: false });
+      _dummy.position.set(0, -8, 0);
+      _dummy.scale.setScalar(0);
       _dummy.updateMatrix();
-      this.trees!.setMatrixAt(i, _dummy.matrix);
-      this.trees!.setColorAt(i, _treeColor);
-    });
-    this.trees.count = this.terrain.trees.length;
-    this.trees.castShadow = true;
-    this.trees.receiveShadow = true;
-    this.scene.add(this.trees);
-    this.syncShadowCasters();
-    const pooled = this.pools.get('arvore');
-    if (pooled) pooled.count = 0;
+      this.debris.setMatrixAt(i, _dummy.matrix);
+    }
+    const puddleGeo = new THREE.CircleGeometry(0.42, 14);
+    puddleGeo.rotateX(-Math.PI / 2);
+    this.puddles = new THREE.InstancedMesh(
+      puddleGeo,
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.22, metalness: 0.05, transparent: true, opacity: 0.92 }),
+      48,
+    );
+    this.puddles.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(48 * 3), 3);
+    this.puddles.frustumCulled = false;
+    this.puddles.count = 0;
+    this.scene.add(this.puddles);
   }
 
   private placeSpawns() {

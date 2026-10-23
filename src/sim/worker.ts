@@ -10,7 +10,8 @@ type Incoming =
   | Init
   | { type: 'command'; command: Command }
   | { type: 'pause'; paused: boolean }
-  | { type: 'stop' };
+  | { type: 'stop' }
+  | { type: 'blast'; x: number; z: number };
 
 let paused = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -42,7 +43,10 @@ self.onmessage = (event: MessageEvent<Incoming>) => {
   }
   if (!match) return;
   if (msg.type === 'command') match.submit(msg.command);
-  else if (msg.type === 'pause') paused = msg.paused;
+  else if (msg.type === 'blast') {
+    match.explode(msg.x, msg.z, 160, 4.2);
+    postMessage({ type: 'snapshot', snapshot: match.snapshot() });
+  } else if (msg.type === 'pause') paused = msg.paused;
   else if (msg.type === 'stop') {
     if (timer) clearTimeout(timer);
     match = null;

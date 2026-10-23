@@ -3,7 +3,7 @@ import { PRESETS, validateLoadout, loadoutCost } from '../data/catalog';
 import { BUDGET } from './constants';
 import { buildSpecs } from './deploy';
 import { findPath } from './pathfinding';
-import { generateTerrain, sampleHeight } from './terrain';
+import { generateTerrain, isWalkable, sampleHeight } from './terrain';
 import { createMatch } from './world';
 
 describe('exército', () => {
@@ -33,6 +33,8 @@ describe('terreno', () => {
     const center = sampleHeight(a, 0, 0);
     expect(Math.abs(sampleHeight(a, spawn.x, spawn.z) - spawn.y)).toBeLessThan(0.05);
     expect(center).toBeGreaterThan(1.5);
+    expect(a.props.some((prop) => prop.kind === 'tower' && prop.alive)).toBe(true);
+    expect(a.props.filter((prop) => prop.kind === 'car').length).toBeGreaterThanOrEqual(8);
   });
 
   it('liga a base ao centro', () => {
@@ -68,5 +70,44 @@ describe('simulação', () => {
       b.step();
       expect(a.hash).toBe(b.hash);
     }
+  });
+
+  it('quebra o mesmo carro dos dois lados e abre o chão', () => {
+    const terrain = generateTerrain(20261022);
+    const car = terrain.props.find((prop) => prop.kind === 'car');
+    expect(car).toBeTruthy();
+    const specs = [
+      ...buildSpecs(terrain, PRESETS[0].counts, 0, 0, [], true),
+      ...buildSpecs(terrain, PRESETS[2].counts, 1, 4, [], true),
+    ];
+    const options = { seed: 5, specs, aiTeams: [] as number[], openingPush: false };
+    const a = createMatch(options);
+    const b = createMatch(options);
+    const target = a.terrain.props.find((prop) => prop.kind === 'car' && prop.alive)!;
+    const blocked = !isWalkable(a.terrain, target.x, target.z);
+    a.explode(target.x, target.z, 90, 2.4);
+    b.explode(target.x, target.z, 90, 2.4);
+    const left = a.terrain.props.find((prop) => prop.id === target.id)!;
+    expect(left.alive).toBe(false);
+    expect(b.terrain.props.find((prop) => prop.id === target.id)!.alive).toBe(false);
+    expect(a.hash).toBe(b.hash);
+    if (blocked) expect(isWalkable(a.terrain, target.x, target.z)).toBe(true);
+  });
+
+  it('derruba a torre quebrada de Paris', () => {
+    const terrain = generateTerrain(20261022);
+    const ang = -Math.PI / 2 + Math.PI / 8;
+    const x = Math.cos(ang) * 15.2;
+    const z = Math.sin(ang) * 15.2;
+    const specs = [
+      ...buildSpecs(terrain, PRESETS[0].counts, 0, 0, [], true),
+      ...buildSpecs(terrain, PRESETS[2].counts, 1, 4, [], true),
+    ];
+    const world = createMatch({ seed: 20261022, specs, aiTeams: [], openingPush: false });
+    const tower = world.terrain.props.find((prop) => prop.kind === 'tower');
+    expect(tower).toBeTruthy();
+    expect(Math.hypot(tower!.x - x, tower!.z - z)).toBeLessThan(0.05);
+    world.explode(x, z, 160, 4.2);
+    expect(tower!.alive).toBe(false);
   });
 });

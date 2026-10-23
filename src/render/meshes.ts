@@ -1,3 +1,4 @@
+import type { PropKind } from '../sim/terrain';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
@@ -351,6 +352,98 @@ function tree(): THREE.BufferGeometry {
   parts.push(part(sph(0.32, 7, 6), [0.6, 0.85, 0.48], -0.26, 1.4, -0.08));
   parts.push(part(cyl(0.45, 0.5, 0.08, 10), SHADE, 0, 0.05, 0));
   return merge(parts);
+}
+
+function burnedCar(): THREE.BufferGeometry {
+  const rust: RGB = [0.32, 0.22, 0.16];
+  const soot: RGB = [0.12, 0.1, 0.09];
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(part(box(1.5, 0.38, 0.72, 0.06), rust, 0, 0.32, 0));
+  parts.push(part(box(0.72, 0.32, 0.64, 0.05), soot, -0.05, 0.62, 0));
+  parts.push(part(box(0.22, 0.22, 0.08, 0.02), [0.08, 0.08, 0.08], 0.55, 0.28, 0.34));
+  parts.push(part(box(0.22, 0.22, 0.08, 0.02), [0.08, 0.08, 0.08], 0.55, 0.28, -0.34));
+  parts.push(part(box(0.22, 0.22, 0.08, 0.02), [0.08, 0.08, 0.08], -0.55, 0.28, 0.34));
+  parts.push(part(box(0.22, 0.22, 0.08, 0.02), [0.08, 0.08, 0.08], -0.55, 0.28, -0.34));
+  return merge(parts);
+}
+
+function streetLamp(): THREE.BufferGeometry {
+  const iron: RGB = [0.45, 0.42, 0.38];
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(part(cyl(0.06, 0.09, 1.7, 6), iron, 0, 0.9, 0));
+  parts.push(part(box(0.55, 0.06, 0.08, 0.02), iron, 0.22, 1.72, 0));
+  parts.push(part(box(0.16, 0.1, 0.12, 0.02), [0.95, 0.86, 0.55], 0.42, 1.62, 0));
+  return merge(parts);
+}
+
+function stoneWall(): THREE.BufferGeometry {
+  const stone: RGB = [0.72, 0.66, 0.56];
+  const chip: RGB = [0.45, 0.38, 0.3];
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(part(box(1.6, 0.9, 0.38, 0.04), stone, 0, 0.5, 0));
+  parts.push(part(box(0.4, 0.55, 0.42, 0.03), chip, 0.45, 0.85, 0));
+  parts.push(part(box(0.28, 0.2, 0.4, 0.02), chip, -0.4, 0.2, 0.1));
+  return merge(parts);
+}
+
+function rubblePile(): THREE.BufferGeometry {
+  const stone: RGB = [0.55, 0.5, 0.44];
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(part(box(0.7, 0.28, 0.5, 0.04), stone, 0, 0.16, 0, 0, 0.4, 0.2));
+  parts.push(part(box(0.4, 0.22, 0.36, 0.03), [0.4, 0.36, 0.3], 0.28, 0.28, 0.1, 0.2, 0.6, 0));
+  parts.push(part(box(0.32, 0.18, 0.28, 0.02), stone, -0.25, 0.22, -0.12, 0, 1, 0.4));
+  return merge(parts);
+}
+
+function barricade(): THREE.BufferGeometry {
+  const wood: RGB = [0.45, 0.28, 0.16];
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(part(box(1.2, 0.08, 0.12, 0.02), wood, 0, 0.45, 0, 0, 0, 0.5));
+  parts.push(part(box(1.2, 0.08, 0.12, 0.02), wood, 0, 0.28, 0, 0, 0, -0.4));
+  parts.push(part(cyl(0.16, 0.16, 0.4, 8), [0.18, 0.16, 0.14], 0.45, 0.22, 0.15));
+  return merge(parts);
+}
+
+function eiffel(): THREE.BufferGeometry {
+  const iron: RGB = [0.62, 0.52, 0.38];
+  const dark: RGB = [0.28, 0.22, 0.16];
+  const parts: THREE.BufferGeometry[] = [];
+  const leg = (x: number, z: number) => {
+    parts.push(part(box(0.12, 2.6, 0.12, 0.02), iron, x, 1.3, z, z * 0.08, 0, -x * 0.08));
+  };
+  leg(-0.55, -0.55);
+  leg(0.55, -0.55);
+  leg(-0.55, 0.55);
+  leg(0.55, 0.55);
+  parts.push(part(box(1.35, 0.1, 1.35, 0.02), iron, 0, 2.15, 0));
+  parts.push(part(box(0.7, 1.3, 0.7, 0.03), iron, 0, 2.8, 0));
+  parts.push(part(box(0.28, 0.7, 0.28, 0.02), dark, 0.12, 3.7, 0, 0, 0, 0.4));
+  return merge(parts);
+}
+
+function sandHeap(): THREE.BufferGeometry {
+  const tan: RGB = [0.72, 0.58, 0.36];
+  const parts: THREE.BufferGeometry[] = [];
+  parts.push(part(box(0.9, 0.28, 0.42, 0.08), tan, 0, 0.16, 0));
+  parts.push(part(box(0.7, 0.22, 0.38, 0.06), [0.8, 0.66, 0.42], 0.1, 0.32, 0.05));
+  return merge(parts);
+}
+
+let propGeos: Record<PropKind, THREE.BufferGeometry> | null = null;
+
+export function propLibrary(): Record<PropKind, THREE.BufferGeometry> {
+  if (propGeos) return propGeos;
+  propGeos = {
+    tree: tree(),
+    car: burnedCar(),
+    lamp: streetLamp(),
+    wall: stoneWall(),
+    rubble: rubblePile(),
+    barricade: barricade(),
+    tower: eiffel(),
+    bag: sandHeap(),
+  };
+  return propGeos;
 }
 
 let library: Record<string, THREE.BufferGeometry> | null = null;

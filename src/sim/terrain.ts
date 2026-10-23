@@ -2,8 +2,11 @@ import { MAP_RADIUS } from './constants';
 import { clamp, len2, smoothstep } from './math';
 import { Rng } from './rng';
 
+export type PropKind = 'tree' | 'car' | 'lamp' | 'wall' | 'rubble' | 'barricade' | 'tower' | 'bag';
+
 export interface Prop {
-  kind: 'tree';
+  id: number;
+  kind: PropKind;
   x: number;
   z: number;
   y: number;
@@ -11,6 +14,9 @@ export interface Prop {
   rot: number;
   radius: number;
   height: number;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
 }
 
 export interface SpawnPoint {
@@ -29,7 +35,7 @@ export interface Terrain {
   navRes: number;
   walkable: Uint8Array;
   cost: Float32Array;
-  trees: Prop[];
+  props: Prop[];
   spawns: SpawnPoint[];
 }
 
@@ -153,31 +159,48 @@ function stamp(heights: Float32Array, res: number, radius: number, cx: number, c
   }
 }
 
-function rebuildNav(t: Terrain) {
+function writeCell(t: Terrain, i: number, j: number) {
   const cell = (t.radius * 2) / t.navRes;
+  const { x, z } = gridCenter(t, i, j);
+  const idx = j * t.navRes + i;
+  const d = len2(x, z);
+  if (d > t.radius * 0.9) {
+    t.walkable[idx] = 0;
+    t.cost[idx] = 99;
+    return;
+  }
+  const h = sampleHeight(t, x, z);
+  const slope = Math.max(
+    Math.abs(sampleHeight(t, x + cell, z) - h),
+    Math.abs(sampleHeight(t, x, z + cell) - h),
+  ) / cell;
+  let blocked = slope > 1.02;
+  for (const prop of t.props) {
+    if (!prop.alive || prop.radius < 0.4) continue;
+    if (Math.hypot(x - prop.x, z - prop.z) < prop.radius + 0.22) blocked = true;
+  }
+  t.walkable[idx] = blocked ? 0 : 1;
+  const mud = h < 0.42 ? 1.45 : 1;
+  const hill = 1 + clamp(slope, 0, 1) * 1.4;
+  t.cost[idx] = blocked ? 99 : mud * hill;
+}
+
+function rebuildNav(t: Terrain) {
   for (let j = 0; j < t.navRes; j++) {
-    for (let i = 0; i < t.navRes; i++) {
-      const { x, z } = gridCenter(t, i, j);
-      const idx = j * t.navRes + i;
-      const d = len2(x, z);
-      if (d > t.radius * 0.9) {
-        t.walkable[idx] = 0;
-        t.cost[idx] = 99;
-        continue;
-      }
-      const h = sampleHeight(t, x, z);
-      const slope = Math.max(
-        Math.abs(sampleHeight(t, x + cell, z) - h),
-        Math.abs(sampleHeight(t, x, z + cell) - h),
-      ) / cell;
-      let blocked = slope > 1.02;
-      for (const tree of t.trees) {
-        if (Math.hypot(x - tree.x, z - tree.z) < tree.radius + 0.28) blocked = true;
-      }
-      t.walkable[idx] = blocked ? 0 : 1;
-      const mud = h < 0.42 ? 1.45 : 1;
-      const hill = 1 + clamp(slope, 0, 1) * 1.4;
-      t.cost[idx] = blocked ? 99 : mud * hill;
+    for (let i = 0; i < t.navRes; i++) writeCell(t, i, j);
+  }
+}
+
+/** Recompute the cells a broken prop used to occupy. */
+export function refreshNavAround(t: Terrain, x: number, z: number, radius: number) {
+  const cell = (t.radius * 2) / t.navRes;
+  const reach = Math.ceil(radius / cell) + 2;
+  const c = worldToGrid(t, x, z);
+  if (!c) return;
+  for (let j = c.j - reach; j <= c.j + reach; j++) {
+    for (let i = c.i - reach; i <= c.i + reach; i++) {
+      if (i < 0 || j < 0 || i >= t.navRes || j >= t.navRes) continue;
+      writeCell(t, i, j);
     }
   }
 }
@@ -205,6 +228,95 @@ export function nearestWalkable(t: Terrain, x: number, z: number, maxR = 8): { x
     }
   }
   return null;
+}
+
+function addProp(
+  list: Prop[],
+  kind: PropKind,
+  x: number,
+  z: number,
+  rot: number,
+  scale: number,
+  radius: number,
+  height: number,
+  hp: number,
+) {
+  list.push({
+    id: list.length,
+    kind,
+    x,
+    z,
+    y: 0,
+    scale,
+    rot,
+    radius,
+    height,
+    hp,
+    maxHp: hp,
+    alive: true,
+  });
+}
+
+/** Ruined Paris on the toy circle: tower, burned cars, walls, lamps. Roads stay open. */
+function placeParis(seed: number, spawns: SpawnPoint[]): Prop[] {
+  const props: Prop[] = [];
+  const rng = new Rng(seed ^ 0x51ed);
+  const towerA = -Math.PI / 2 + Math.PI / 8;
+  addProp(props, 'tower', Math.cos(towerA) * 15.2, Math.sin(towerA) * 15.2, towerA + 0.4, 1.15, 1.55, 6.4, 96);
+
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+    const px = -Math.sin(a);
+    const pz = Math.cos(a);
+    const along = 9.5 + (i % 2) * 4.2;
+    const side = 4.15;
+    addProp(props, 'car', Math.cos(a) * along + px * side, Math.sin(a) * along + pz * side, a + (i % 2 ? 0.4 : -0.2), 0.95 + (i % 3) * 0.08, 0.95, 0.85, 26);
+    const lampU = 12 + (i % 2) * 5;
+    addProp(props, 'lamp', Math.cos(a) * lampU - px * 3.3, Math.sin(a) * lampU - pz * 3.3, a, 1, 0.16, 2.4, 8);
+    const wedge = a + Math.PI / 8;
+    const wr = 11.5 + (i % 3) * 1.4;
+    addProp(props, 'wall', Math.cos(wedge) * wr, Math.sin(wedge) * wr, wedge + Math.PI / 2, 1, 1.15, 1.35, 42);
+    if (i % 2 === 0) {
+      addProp(props, 'barricade', Math.cos(wedge) * (wr + 3.2), Math.sin(wedge) * (wr + 3.2), wedge, 1, 0.7, 0.7, 18);
+    }
+  }
+
+  let guard = 0;
+  while (props.filter((p) => p.kind === 'rubble').length < 7 && guard < 80) {
+    guard++;
+    const a = rng.next() * Math.PI * 2;
+    const r = 8 + rng.next() * 12;
+    const x = Math.cos(a) * r;
+    const z = Math.sin(a) * r;
+    if (corridorWeight(x, z) > 0.22) continue;
+    if (len2(x, z) < 7.2) continue;
+    let crowded = false;
+    for (const s of spawns) if (Math.hypot(x - s.x, z - s.z) < 6) crowded = true;
+    for (const p of props) if (Math.hypot(x - p.x, z - p.z) < 2.2) crowded = true;
+    if (crowded) continue;
+    addProp(props, 'rubble', x, z, rng.next() * Math.PI, 0.8 + rng.next() * 0.5, 0.85, 0.7, 16);
+  }
+  guard = 0;
+  while (props.filter((p) => p.kind === 'tree').length < 6 && guard < 80) {
+    guard++;
+    const a = rng.next() * Math.PI * 2;
+    const r = 8 + rng.next() * 14;
+    const x = Math.cos(a) * r;
+    const z = Math.sin(a) * r;
+    if (corridorWeight(x, z) > 0.2) continue;
+    if (len2(x, z) < 7.5) continue;
+    let crowded = false;
+    for (const s of spawns) if (Math.hypot(x - s.x, z - s.z) < 6.5) crowded = true;
+    for (const p of props) if (Math.hypot(x - p.x, z - p.z) < 2.4) crowded = true;
+    if (crowded) continue;
+    const scale = 0.8 + rng.next() * 0.45;
+    addProp(props, 'tree', x, z, rng.next() * Math.PI * 2, scale, 0.5 * scale, 2.8 * scale, 14);
+  }
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + 0.4;
+    addProp(props, 'bag', Math.cos(a) * 7.6, Math.sin(a) * 7.6, a, 1, 0.55, 0.45, 12);
+  }
+  return props;
 }
 
 export function generateTerrain(seed: number): Terrain {
@@ -307,32 +419,7 @@ export function generateTerrain(seed: number): Terrain {
     });
   }
 
-  const trees: Prop[] = [];
-  const tRng = new Rng(seed ^ 0x51ed);
-  let guard = 0;
-  while (trees.length < 18 && guard < 400) {
-    guard++;
-    const a = tRng.next() * Math.PI * 2;
-    const r = 4 + tRng.next() * (radius * 0.78);
-    const x = Math.cos(a) * r;
-    const z = Math.sin(a) * r;
-    if (corridorWeight(x, z) > 0.28) continue;
-    if (len2(x, z) < 6.5) continue;
-    let nearSpawn = false;
-    for (const s of spawns) if (Math.hypot(x - s.x, z - s.z) < 8) nearSpawn = true;
-    if (nearSpawn) continue;
-    const scale = 0.85 + tRng.next() * 0.7;
-    trees.push({
-      kind: 'tree',
-      x,
-      z,
-      y: 0,
-      scale,
-      rot: tRng.next() * Math.PI * 2,
-      radius: 0.55 * scale,
-      height: 3.1 * scale,
-    });
-  }
+  const props = placeParis(seed, spawns);
 
   const terrain: Terrain = {
     seed,
@@ -342,10 +429,10 @@ export function generateTerrain(seed: number): Terrain {
     navRes: NAV,
     walkable: new Uint8Array(NAV * NAV),
     cost: new Float32Array(NAV * NAV),
-    trees,
+    props,
     spawns,
   };
-  for (const tree of trees) tree.y = sampleHeight(terrain, tree.x, tree.z);
+  for (const prop of props) prop.y = sampleHeight(terrain, prop.x, prop.z);
   for (const s of spawns) s.y = sampleHeight(terrain, s.x, s.z);
   rebuildNav(terrain);
   return terrain;
@@ -376,8 +463,9 @@ export function lineOfSight(
     const clear = y - ground;
     if (clear < minClear) minClear = clear;
     if (clear < 0.28) return { clear: false, grazing: true };
-    for (const tree of t.trees) {
-      if (Math.hypot(x - tree.x, z - tree.z) < tree.radius && y < tree.y + tree.height * 0.82) {
+    for (const prop of t.props) {
+      if (!prop.alive || prop.radius < 0.35) continue;
+      if (Math.hypot(x - prop.x, z - prop.z) < prop.radius && y < prop.y + prop.height * 0.82) {
         return { clear: false, grazing: false };
       }
     }
@@ -388,8 +476,8 @@ export function lineOfSight(
 export function terrainTint(x: number, z: number, h: number, slope: number, seed: number): [number, number, number] {
   const n = Rng.hash2(Math.floor(x * 2.4), Math.floor(z * 2.4), seed);
   const path = corridorWeight(x, z);
-  const grassA: [number, number, number] = [0.34, 0.48, 0.24];
-  const grassB: [number, number, number] = [0.42, 0.55, 0.28];
+  const grassA: [number, number, number] = [0.4, 0.36, 0.3];
+  const grassB: [number, number, number] = [0.48, 0.42, 0.34];
   let r = grassA[0] + (grassB[0] - grassA[0]) * n;
   let g = grassA[1] + (grassB[1] - grassA[1]) * n;
   let b = grassA[2] + (grassB[2] - grassA[2]) * n;

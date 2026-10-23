@@ -4,7 +4,7 @@ import { CAPTURE_RADIUS, CAPTURE_SECONDS, GRAVITY, MAP_RADIUS, SIM_DT, SIM_HZ } 
 import { angDiff, clamp, lerpAngle } from './math';
 import { findPath } from './pathfinding';
 import { Rng } from './rng';
-import { generateTerrain, isWalkable, lineOfSight, nearestWalkable, sampleHeight, type Terrain } from './terrain';
+import { generateTerrain, isWalkable, lineOfSight, nearestWalkable, refreshNavAround, sampleHeight, type Prop, type Terrain } from './terrain';
 import { aiThink } from './ai';
 import type { Command, FxEvent, ProjSnap, Snapshot, UnitSnap } from './types';
 
@@ -55,6 +55,8 @@ export interface SimUnit {
   firedRun: boolean;
   sought: boolean;
   lock: number;
+  knockX: number;
+  knockZ: number;
 }
 
 interface Projectile {
@@ -245,6 +247,7 @@ export class World {
       units,
       projectiles,
       fx,
+      props: this.terrain.props.map((prop) => ({ id: prop.id, alive: prop.alive, hp: prop.hp })),
       alive,
       losses: [this.losses[0], this.losses[1]],
     };
@@ -285,6 +288,8 @@ export class World {
       firedRun: false,
       sought: false,
       lock: -1,
+      knockX: 0,
+      knockZ: 0,
     };
   }
 
@@ -454,10 +459,37 @@ export class World {
       this.tryFire(unit);
       return;
     }
+    this.applyKnock(unit);
     if (def.flying) this.moveAir(unit);
     else if (!def.immobile) this.moveGround(unit);
     else this.faceThreat(unit);
     this.tryFire(unit);
+  }
+
+  private applyKnock(unit: SimUnit) {
+    const def = BY_ID[unit.defId];
+    if (!unit.alive || def.immobile || def.role === 'emplacement') {
+      unit.knockX = 0;
+      unit.knockZ = 0;
+      return;
+    }
+    if (Math.hypot(unit.knockX, unit.knockZ) < 0.004) {
+      unit.knockX = 0;
+      unit.knockZ = 0;
+      return;
+    }
+    const nx = unit.x + unit.knockX;
+    const nz = unit.z + unit.knockZ;
+    if (def.flying || isWalkable(this.terrain, nx, nz)) {
+      unit.x = nx;
+      unit.z = nz;
+    } else {
+      unit.knockX = 0;
+      unit.knockZ = 0;
+      return;
+    }
+    unit.knockX *= 0.6;
+    unit.knockZ *= 0.6;
   }
 
   private faceThreat(unit: SimUnit) {
@@ -778,20 +810,35 @@ export class World {
     const ty = td.flying ? target.y : sampleHeight(this.terrain, tx, tz) + 0.8;
     unit.cooldown = w.period;
     if (w.speed <= 0) {
-      const chance = clamp(0.22 + w.accuracy * 0.72 * (1 - 0.4 * dist / Math.max(0.1, w.range)), 0.12, 0.97);
       const y0 = this.eye(unit);
-      this.fx.push({
-        kind: 'tracer',
-        x: unit.x,
-        y: y0,
-        z: unit.z,
-        x2: tx,
-        y2: ty,
-        z2: tz,
-        team: unit.team,
-        shot: w.kind,
-      });
-      if (this.rng.next() <= chance) this.hurt(target, w.damage * mult, unit, w.pen, false, grazing);
+    this.fx.push({
+      kind: 'muzzle',
+      x: unit.x,
+      y: y0,
+      z: unit.z,
+      team: unit.team,
+      shot: w.kind,
+    });
+    this.fx.push({
+      kind: 'tracer',
+      x: unit.x,
+      y: y0,
+      z: unit.z,
+      x2: tx,
+      y2: ty,
+      z2: tz,
+      team: unit.team,
+      shot: w.kind,
+    });
+    this.chipAlong(unit.x, unit.z, tx, tz, w.damage * 0.35);
+    const miss = td.flying
+      ? Math.hypot(tx - target.x, ty - target.y, tz - target.z)
+      : Math.hypot(tx - target.x, tz - target.z);
+    if (miss <= td.radius + 0.62) this.hurt(target, w.damage * mult, unit, w.pen, false, grazing);
+    else {
+      const gy = sampleHeight(this.terrain, tx, tz);
+      this.fx.push({ kind: 'boom', x: tx, y: gy + 0.05, z: tz, size: 0.28, team: unit.team });
+    }
       return;
     }
     this.launch(unit, tx, ty, tz, target.id, w, w.damage * mult);
@@ -860,7 +907,7 @@ export class World {
       shot: w.kind,
       alive: true,
     });
-    this.fx.push({ kind: 'muzzle', x: x0, y: y0, z: z0, team: unit.team });
+    this.fx.push({ kind: 'muzzle', x: x0, y: y0, z: z0, team: unit.team, shot: w.kind });
     if (this.projectiles.length > 96) {
       const drop = this.projectiles.findIndex((p) => p.alive);
       if (drop >= 0) this.projectiles.splice(drop, 1);
@@ -941,6 +988,7 @@ export class World {
     if (!w) return;
     const y = sampleHeight(this.terrain, unit.ax, unit.az);
     this.fx.push({ kind: 'boom', x: unit.ax, y: y + 0.3, z: unit.az, size: Math.max(w.aoe, 1.4), team: unit.team });
+    this.blastProps(unit.ax, unit.az, w.damage, Math.max(w.aoe, 1.6));
     for (const target of this.units) {
       if (!target.alive || target.team === unit.team) continue;
       const td = BY_ID[target.defId];
@@ -1014,6 +1062,7 @@ export class World {
   private boom(team: 0 | 1, attackerId: number, x: number, z: number, damage: number, aoe: number, pen: number, indirect: boolean) {
     const y = sampleHeight(this.terrain, x, z);
     this.fx.push({ kind: 'boom', x, y: y + 0.15, z, size: Math.max(0.7, aoe), team });
+    this.blastProps(x, z, damage, aoe);
     const attacker = attackerId >= 0 ? this.units[attackerId] : null;
     for (const target of this.units) {
       if (!target.alive || target.team === team) continue;
@@ -1021,8 +1070,64 @@ export class World {
       const d = Math.hypot(target.x - x, target.z - z);
       if (d > rad) continue;
       const fall = clamp(1 - (d / rad) * 0.7, 0.25, 1);
-      this.hurt(target, damage * fall, attacker?.alive || attacker ? attacker : null, pen, indirect, false);
+      const nx = d > 0.05 ? (target.x - x) / d : 1;
+      const nz = d > 0.05 ? (target.z - z) / d : 0;
+      const kick = fall * clamp(aoe * 0.62, 0.15, 1.8);
+      target.knockX += nx * kick;
+      target.knockZ += nz * kick;
+      this.hurt(target, damage * fall, attacker ?? null, pen, indirect, false);
     }
+  }
+
+  /** Test and script hook: an explosion that also breaks the street. */
+  explode(x: number, z: number, damage: number, aoe: number) {
+    this.boom(0, -1, x, z, damage, aoe, 0.85, true);
+    this.hash = this.hashState();
+  }
+
+  private blastProps(x: number, z: number, damage: number, aoe: number) {
+    if (aoe < 0.45 && damage < 18) return;
+    for (const prop of this.terrain.props) {
+      if (!prop.alive) continue;
+      const d = Math.hypot(prop.x - x, prop.z - z);
+      const rad = Math.max(aoe, 0.8) + prop.radius * 0.65;
+      if (d > rad) continue;
+      const fall = clamp(1 - d / rad, 0.25, 1);
+      this.chipProp(prop, damage * fall * (aoe >= 0.7 ? 1.55 : 0.7));
+    }
+  }
+
+  private chipAlong(x0: number, z0: number, x1: number, z1: number, damage: number) {
+    const steps = 5;
+    for (let i = 1; i <= steps; i++) {
+      const u = i / steps;
+      const x = x0 + (x1 - x0) * u;
+      const z = z0 + (z1 - z0) * u;
+      for (const prop of this.terrain.props) {
+        if (!prop.alive) continue;
+        if (Math.hypot(prop.x - x, prop.z - z) > prop.radius + 0.3) continue;
+        this.chipProp(prop, damage);
+        return;
+      }
+    }
+  }
+
+  private chipProp(prop: Prop, amount: number) {
+    if (!prop.alive || amount <= 0) return;
+    prop.hp -= amount;
+    if (prop.hp > 0) return;
+    prop.hp = 0;
+    prop.alive = false;
+    refreshNavAround(this.terrain, prop.x, prop.z, prop.radius + 1.6);
+    this.fx.push({
+      kind: 'break',
+      id: prop.id,
+      x: prop.x,
+      y: prop.y + Math.min(1.4, prop.height * 0.45),
+      z: prop.z,
+      size: Math.max(0.8, prop.radius + 0.45),
+      prop: prop.kind,
+    });
   }
 
   private hurt(target: SimUnit, raw: number, attacker: SimUnit | null, pen: number, indirect: boolean, grazing: boolean) {
@@ -1045,7 +1150,16 @@ export class World {
     if (grazing) cover = Math.max(cover, 0.18);
     dmg *= 1 - Math.min(0.72, cover);
     dmg *= 1 - this.auraReduction(target);
+    dmg *= 1.24;
     if (dmg <= 0) return;
+    if (attacker && !BY_ID[target.defId].immobile) {
+      const dx = target.x - attacker.x;
+      const dz = target.z - attacker.z;
+      const dist = Math.hypot(dx, dz) || 1;
+      const kick = clamp(dmg / 48, 0.04, 0.42);
+      target.knockX += (dx / dist) * kick;
+      target.knockZ += (dz / dist) * kick;
+    }
     target.hp -= dmg;
     this.fx.push({ kind: 'hit', id: target.id, x: target.x, y: target.y + def.eye, z: target.z });
     if (target.hp <= 0) this.kill(target);
@@ -1111,21 +1225,34 @@ export class World {
         const push = (min - d) * 0.5;
         const nx = dx / d;
         const nz = dz / d;
-        a.x -= nx * push;
-        a.z -= nz * push;
-        b.x += nx * push;
-        b.z += nz * push;
+        const ax = a.x - nx * push;
+        const az = a.z - nz * push;
+        const bx = b.x + nx * push;
+        const bz = b.z + nz * push;
+        if (isWalkable(this.terrain, ax, az)) {
+          a.x = ax;
+          a.z = az;
+        }
+        if (isWalkable(this.terrain, bx, bz)) {
+          b.x = bx;
+          b.z = bz;
+        }
       }
     }
     for (const u of ground) {
-      for (const tree of this.terrain.trees) {
-        const dx = u.x - tree.x;
-        const dz = u.z - tree.z;
+      for (const prop of this.terrain.props) {
+        if (!prop.alive || prop.radius < 0.4) continue;
+        const dx = u.x - prop.x;
+        const dz = u.z - prop.z;
         const d = Math.hypot(dx, dz);
-        const min = tree.radius + BY_ID[u.defId].radius;
+        const min = prop.radius + BY_ID[u.defId].radius * 0.65;
         if (d < min && d > 0.0001) {
-          u.x = tree.x + (dx / d) * min;
-          u.z = tree.z + (dz / d) * min;
+          const nx = prop.x + (dx / d) * min;
+          const nz = prop.z + (dz / d) * min;
+          if (isWalkable(this.terrain, nx, nz)) {
+            u.x = nx;
+            u.z = nz;
+          }
         }
       }
       if (!isWalkable(this.terrain, u.x, u.z)) {
@@ -1241,6 +1368,11 @@ export class World {
       mix(Math.round(p.x * 20));
       mix(Math.round(p.y * 20));
       mix(Math.round(p.z * 20));
+    }
+    for (const prop of this.terrain.props) {
+      mix(prop.id);
+      mix(prop.alive ? 1 : 0);
+      mix(Math.round(prop.hp));
     }
     return h >>> 0;
   }

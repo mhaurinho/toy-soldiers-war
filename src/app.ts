@@ -110,7 +110,7 @@ export class App {
       this.ready = true;
       this.view.start(() => this.onFrame());
       const params = new URLSearchParams(location.search);
-      if (params.has('demo')) this.startDemo();
+      if (params.has('demo') || params.has('quebra')) this.startDemo(params.has('quebra'));
       else this.goto('menu');
     } catch (err) {
       this.errorText = err instanceof Error ? err.message : 'Falha ao abrir o render 3D.';
@@ -171,7 +171,7 @@ export class App {
     this.goto('builder');
   }
 
-  private startDemo() {
+  private startDemo(quebra = false) {
     this.stopMatch();
     this.demo = true;
     this.play = 'ai';
@@ -185,8 +185,20 @@ export class App {
     this.view.selected.clear();
     this.paused = false;
     this.goto('battle');
-    this.openWorker(true, 200, [1]);
-    this.view.poseCamera(1.2, -0.4, 0.95, 0.68, 34);
+    this.openWorker(!quebra, quebra ? 0 : 200, quebra ? [] : [1]);
+    const towerA = -Math.PI / 2 + Math.PI / 8;
+    const tx = Math.cos(towerA) * 15.2;
+    const tz = Math.sin(towerA) * 15.2;
+    if (quebra) {
+      this.view.poseCamera(tx, tz, towerA + Math.PI, 0.78, 16);
+      window.setTimeout(() => {
+        this.worker?.postMessage({ type: 'blast', x: tx, z: tz });
+        const car = this.terrain?.props.find((prop) => prop.kind === 'car');
+        if (car) this.worker?.postMessage({ type: 'blast', x: car.x, z: car.z });
+        const wall = this.terrain?.props.find((prop) => prop.kind === 'wall');
+        if (wall) this.worker?.postMessage({ type: 'blast', x: wall.x, z: wall.z });
+      }, 1600);
+    } else this.view.poseCamera(1.2, -0.4, 0.95, 0.68, 34);
   }
 
   private stopMatch() {
@@ -233,12 +245,14 @@ export class App {
     this.view.pushSnapshot(snapshot);
     const now = performance.now();
     for (const event of snapshot.fx) {
-      if (event.kind === 'boom' || event.kind === 'death') {
-        if (now - this.lastBoom > 90) {
+      if (event.kind === 'boom' || event.kind === 'break') {
+        if (now - this.lastBoom > 70) {
           this.lastBoom = now;
-          this.sfx.boom();
+          this.sfx.boom(event.kind === 'boom' ? event.size : 1.3);
         }
-      } else if (event.kind === 'tracer' || event.kind === 'muzzle') this.sfx.shot();
+      } else if (event.kind === 'death') this.sfx.melt();
+      else if (event.kind === 'tracer') this.sfx.shot(event.shot);
+      else if (event.kind === 'muzzle') this.sfx.shot(event.shot);
     }
     this.paintHud();
     if (snapshot.over && this.screen === 'battle') {
@@ -316,9 +330,9 @@ export class App {
 
   private menuMarkup(): string {
     return `<section class="panel menu">
-      <p class="eyebrow">Mesa de guerra · 1v1</p>
+      <p class="eyebrow">Paris em Ruínas · 1v1</p>
       <h1>Soldadinhos</h1>
-      <p class="lede">Componha o exército, escolha o posto no círculo e segure o morro. Sem quartel, sem fila de produção: o que você trouxe é o que luta.</p>
+      <p class="lede">Componha o exército e segure o morro. Carros, muros e a torre quebrada caem quando o explosivo acerta. Quem morre derrete em plástico.</p>
       <div class="swatches"><i class="swatch" style="background:${TEAMS[0].plastic}"></i> Verde <i class="swatch" style="background:${TEAMS[1].plastic}"></i> Areia</div>
       <div class="actions">
         <button class="btn gold" data-act="play" data-mode="ai" type="button">Contra a IA</button>

@@ -58,11 +58,18 @@ export type Command =
 
 export type FxEvent =
   | { kind: 'tracer'; x: number; y: number; z: number; x2: number; y2: number; z2: number; team: 0 | 1; shot: 'bullet' | 'shell' | 'rocket' | 'missile' | 'bomb' }
-  | { kind: 'muzzle'; x: number; y: number; z: number; team: 0 | 1 }
+  | { kind: 'muzzle'; x: number; y: number; z: number; team: 0 | 1; shot: 'bullet' | 'shell' | 'rocket' | 'missile' | 'bomb' }
   | { kind: 'boom'; x: number; y: number; z: number; size: number; team: 0 | 1 }
   | { kind: 'hit'; id: number; x: number; y: number; z: number }
   | { kind: 'death'; id: number; x: number; y: number; z: number; team: 0 | 1 }
-  | { kind: 'marker'; x: number; y: number; z: number; team: 0 | 1 };
+  | { kind: 'marker'; x: number; y: number; z: number; team: 0 | 1 }
+  | { kind: 'break'; id: number; x: number; y: number; z: number; size: number; prop: 'tree' | 'car' | 'lamp' | 'wall' | 'rubble' | 'barricade' | 'tower' | 'bag' };
+
+export interface PropSnap {
+  id: number;
+  alive: boolean;
+  hp: number;
+}
 
 export interface UnitSnap {
   id: number;
@@ -102,6 +109,7 @@ export interface Snapshot {
   units: UnitSnap[];
   projectiles: ProjSnap[];
   fx: FxEvent[];
+  props: PropSnap[];
   alive: [number, number];
   losses: [number, number];
 }

@@ -1,6 +1,6 @@
 # Soldadinhos
 
-Batalha tática 1v1 de soldadinhos de plástico no navegador. O mapa é um círculo com relevo, o exército cabe num orçamento, e a partida se decide no morro do centro ou quando não sobra combatente.
+Batalha tática 1v1 de soldadinhos de plástico no navegador. O primeiro mapa é **Paris em Ruínas**: um círculo de ruas, carros queimados, muros e uma torre quebrada. O exército cabe num orçamento, e a partida se decide no morro do centro ou quando não sobra combatente.
 
 ## Como rodar
 
@@ -27,6 +27,8 @@ npm run preview
 
 O morro alto dá vantagem de tiro. Trincheira e sacos dão cobertura. Tiro indireto ignora a linha de visão e sofre menos com cobertura. A névoa esconde unidades, não o tabuleiro; um contato some de vista e deixa um fantasma por alguns segundos.
 
+Explosivo (morteiro, obus, tanque, jato) quebra o cenário. O carro, o muro ou a torre saem do caminho e o chão volta a ser andável. Os cacos que voam são só desenho: a simulação guarda a vida de cada peça, para os dois lados concordarem. Um soldado abatido tomba e derrete numa poça da cor do time.
+
 ## No celular
 
 O jogo cabe no telefone, em pé ou deitado, e no tablet. A página não rola nem amplia sozinha, e os painéis respeitam o entalhe da tela.
@@ -44,7 +46,7 @@ Prioridade: imagem de plástico sob luz de mesa, e uma simulação que no futuro
 | App | Vite 7 + TypeScript, sem React | O laço de render e de simulação é um quadro só. A interface é DOM por cima do canvas, e não precisa de uma árvore virtual no meio. |
 | 3D | three.js r186 `WebGPURenderer` + TSL | WebGPU quando o navegador tem; o mesmo renderer cai para WebGL2 sozinho. SSAO e bloom saem de um `RenderPipeline` (o nome novo do antigo post-processing). Instâncias de GPU, uma malha por tipo de peça, material físico com clearcoat para o plástico. |
 | Simulação | Mundo próprio, tick fixo de 20 Hz, dentro de um Web Worker | O worker é o anfitrião local. A thread principal só desenha e manda comandos. Não há `Math.random` no tick: o terreno e os tiros saem de um mulberry32 e de hashes inteiros. |
-| Física | Nenhuma (Rapier/Jolt ficaram de fora) | WASM de física não é determinístico entre CPUs, e um lockstep precisa do mesmo resultado dos dois lados. Separação em círculo e altura do terreno resolvem o que o jogo pede. |
+| Física | Vida por peça do cenário, sem Rapier/Jolt | WASM de física não é determinístico entre CPUs. O lockstep guarda se o muro ainda está de pé. O entulho que salta na tela é cosmético. |
 | ECS | Nenhum (bitecs/miniplex ficaram de fora) | O estado é um array de unidades com id estável. Um ECS genérico não deixa o hash de lockstep mais claro, e esconde a ordem de iteração. |
 | Rede | Protocolo em `src/net/protocol.ts`, sem transporte ainda | O contrato já é o de lockstep: semente, listas de spawn e comandos com tick atrasado (`INPUT_DELAY_TICKS`). Colyseus ou um host WebRTC só retransmitem isso e comparam `Snapshot.hash`. |
 
